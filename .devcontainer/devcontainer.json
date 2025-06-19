@@ -1,0 +1,12 @@
+{
+  "name": "jarvis-ai-dev",
+  "build": {
+    "dockerfile": "../docker/dev.Dockerfile"
+  },
+  "settings": {
+    "terminal.integrated.shell.linux": "/bin/bash"
+  },
+  "mounts": [
+    "source=/data,target=/home/salumi/projects/jarvis-ai/data,type=bind"
+  ]
+}
