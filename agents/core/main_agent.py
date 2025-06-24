@@ -1,124 +1,235 @@
-import asyncio
-import time
+import os
+import sys
 import signal
-import logging
+import time
 import json
-from typing import Dict, Any
+import logging
+import asyncio
+import uuid
+from typing import Optional, Dict, Any
 import typer
 from fastapi import FastAPI
-from prometheus_client import start_http_server, Counter
-from autogen_core import MessageContext
+from fastapi.responses import JSONResponse
+from fastapi_health import health as fastapi_health_check
+from prometheus_client import start_http_server, Counter, Gauge, Histogram
+
+# FIX: Import AgentTask properly
+from agents.core.base_agent import AgentTask, IntelligentLLMInterface
 from agents.core.orchestrator import orchestrator
-from agents.specialized.weather_agent import ReliableWeatherAgent
-from agents.specialized.routine_agent import ReliableRoutineAgent
+from agents.specialized.weather_agent import WeatherAgent
+from agents.specialized.routine_agent import RoutineAgent
 from agents.core.database import db_manager
 from config.settings import settings
+from learning.behavior.behavior_engine import add_to_semantic_memory, search_semantic_memory
 
-# Simple logging
-logging.basicConfig(level=logging.INFO, format='%(message)s')
+# Rest of the file stays exactly the same...
+
+# Enhanced Logging
 logger = logging.getLogger("jarvis")
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler(sys.stdout)
+formatter = logging.Formatter('%(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
-# Prometheus metrics
-REQUESTS = Counter('jarvis_requests_total', 'Total requests')
+def log_structured(event, **kwargs):
+    logger.info(json.dumps({"event": event, **kwargs}))
 
-class SimpleMessageContext:
-    """Simple context for AutoGen messages"""
-    def __init__(self, sender: str = "user"):
-        self.sender = sender
+# Enhanced Metrics
+REQUESTS = Counter('agent_requests_total', 'Total requests')
+INTELLIGENT_RESPONSES = Counter('intelligent_responses_total', 'Intelligent responses generated')
+LLM_CALLS = Counter('llm_calls_total', 'LLM API calls')
+RESPONSE_QUALITY = Histogram('response_quality_score', 'Response quality scores')
 
-class AutoGenJarvis:
-    """Simple AutoGen-based Jarvis interface"""
+class IntelligentJarvis:
+    """Intelligent Jarvis AI Assistant"""
     
     def __init__(self):
         self.orchestrator = orchestrator
-        logger.info("✅ AutoGen Jarvis initialized")
+        self.specialized_agents = {}
+        self._initialize_agents()
     
-    async def chat(self, message: str) -> str:
-        """Simple chat interface using AutoGen"""
-        REQUESTS.inc()
-        
+    def _initialize_agents(self):
+        """Initialize specialized agents"""
         try:
-            # Use AutoGen's native message handling
-            context = SimpleMessageContext("user")
-            response = await self.orchestrator.handle_user_message(message, context)
+            self.specialized_agents['weather'] = WeatherAgent()
+            self.specialized_agents['routine'] = RoutineAgent()
             
-            return response
+            logger.info("✅ Intelligent agents initialized")
+            logger.info(f"🧠 Available agents: {list(self.orchestrator.agent_registry._agents.keys())}")
             
         except Exception as e:
-            logger.error(f"❌ Chat failed: {e}")
-            return "I'm having trouble right now. Please try again."
+            logger.error(f"❌ Agent initialization failed: {e}")
+    
+    async def process_request_intelligently(self, user_request: str) -> Dict[str, Any]:
+        """Process any request intelligently"""
+        REQUESTS.inc()
+        INTELLIGENT_RESPONSES.inc()
+        start_time = time.time()
+        
+        try:
+            # Create intelligent task
+            task = AgentTask(
+                task_id=str(uuid.uuid4()),
+                task_type="intelligent_request",
+                content=user_request,
+                context={"timestamp": time.time(), "user_id": "default"},
+                requester_id="intelligent_interface"
+            )
+            
+            # Process through intelligent orchestrator
+            response = await self.orchestrator.handle_task_direct(task)
+            
+            duration = time.time() - start_time
+            RESPONSE_QUALITY.observe(response.confidence)
+            
+            return {
+                "success": response.success,
+                "response": response.result.get("workflow_result", "I'm thinking..."),
+                "confidence": response.confidence,
+                "reasoning": response.reasoning,
+                "duration": duration,
+                "metadata": response.metadata
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Intelligent processing failed: {e}")
+            
+            # Fallback to basic LLM response
+            from agents.core.base_agent import IntelligentLLMInterface
+            llm = IntelligentLLMInterface()
+            
+            fallback_response = await llm.think(
+                f"The user said: {user_request}. Please provide a helpful response.",
+                {"fallback": True}
+            )
+            
+            return {
+                "success": True,
+                "response": fallback_response,
+                "confidence": 0.6,
+                "reasoning": "Used fallback LLM response",
+                "duration": time.time() - start_time,
+                "fallback": True
+            }
 
-# Initialize Jarvis
-jarvis = AutoGenJarvis()
+# Initialize intelligent Jarvis
+jarvis = IntelligentJarvis()
 
 # CLI Commands
 app = typer.Typer()
 
 @app.command()
 def chat(message: str):
-    """Chat with AutoGen Jarvis"""
-    print(f"🧠 You: {message}")
+    """Intelligent chat with Jarvis"""
+    log_structured("intelligent_chat", message=message)
     
-    # Run async chat
+    # Process intelligently
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    response = loop.run_until_complete(jarvis.chat(message))
+    result = loop.run_until_complete(jarvis.process_request_intelligently(message))
     loop.close()
     
-    print(f"🤖 Jarvis: {response}")
+    # Display intelligent response
+    if result["success"]:
+        print(f"🧠 Jarvis: {result['response']}")
+        
+        confidence_emoji = "🔥" if result['confidence'] > 0.8 else "💡" if result['confidence'] > 0.6 else "🤔"
+        print(f"{confidence_emoji} Confidence: {result['confidence']:.2%} | Duration: {result['duration']:.2f}s")
+        
+        if result.get("metadata") and result["metadata"].get("specialist_used"):
+            print(f"🔧 Used specialist: {result['metadata']['specialist_used']}")
+        
+        if result.get("fallback"):
+            print("⚡ Used fallback reasoning")
+    else:
+        print(f"❌ Something went wrong: {result.get('response', 'Unknown error')}")
 
-@app.command() 
-def status():
-    """Show system status"""
+@app.command()
+def memory_search(query: str):
+    """Search semantic memory intelligently"""
+    results = search_semantic_memory(query, n_results=5)
+    
+    if results and results.get('documents'):
+        print(f"🔍 Found {len(results['documents'][0])} relevant memories:")
+        for i, doc in enumerate(results['documents'][0][:3]):
+            print(f"   {i+1}. {doc[:100]}...")
+    else:
+        print("🔍 No relevant memories found")
+
+@app.command()
+def agent_status():
+    """Show intelligent agent status"""
+    print("🧠 Intelligent Multi-Agent System Status:")
+    print(f"   🎯 Orchestrator: {jarvis.orchestrator.state.value}")
+    
+    for name, agent in jarvis.specialized_agents.items():
+        print(f"   🔧 {name.title()}: {agent.state.value}")
+        print(f"      📊 Capabilities: {len(agent.capabilities)}")
+    
+    # Show recent intelligent interactions
     try:
-        health = db_manager.health_check()
-        print(f"🏥 Database: {health.get('status', 'unknown')}")
-        print(f"🤖 Orchestrator: Active")
-        print(f"📊 Available agents: weather, routine")
+        conn = db_manager.get_connection()
+        with conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FROM agent_logs 
+                WHERE agent_id = 'orchestrator_agent' 
+                AND timestamp > NOW() - INTERVAL '1 hour'
+            """)
+            recent_count = cur.fetchone()[0]
+        
+        print(f"\n🔄 Recent interactions: {recent_count} in the last hour")
     except Exception as e:
-        print(f"❌ Status check failed: {e}")
+        print(f"📊 Status check error: {e}")
 
 @app.command()
 def serve():
-    """Start AutoGen Jarvis service"""
+    """Start intelligent Jarvis service"""
     # Start metrics
     start_http_server(8001)
-    print("📊 Metrics server: http://localhost:8001")
+    print("📊 Metrics server started on port 8001")
     
-    # FastAPI
-    app_api = FastAPI(title="AutoGen Jarvis", version="4.0.0")
+    # FastAPI for intelligent endpoints
+    fastapi_app = FastAPI(title="Intelligent Jarvis AI", version="3.0.0")
     
-    @app_api.post("/chat")
-    async def chat_api(request: Dict[str, Any]):
+    @fastapi_app.post("/intelligent/chat")
+    async def intelligent_chat(request: Dict[str, Any]):
+        """Intelligent chat endpoint"""
         message = request.get("message", "")
         if not message:
             return {"error": "Message required"}
         
-        response = await jarvis.chat(message)
-        return {"response": response}
+        result = await jarvis.process_request_intelligently(message)
+        return result
     
-    @app_api.get("/health")
+    @fastapi_app.get("/health")
     async def health():
-        return {"status": "healthy", "system": "AutoGen Jarvis"}
+        """Health check"""
+        return {
+            "status": "healthy",
+            "intelligence": "active",
+            "agents": len(jarvis.specialized_agents),
+            "orchestrator": jarvis.orchestrator.state.value
+        }
     
     # Start FastAPI
     import uvicorn
     import threading
     
     def run_api():
-        uvicorn.run(app_api, host="0.0.0.0", port=8005, log_level="warning")
+        uvicorn.run(fastapi_app, host="0.0.0.0", port=8005, log_level="info")
     
     threading.Thread(target=run_api, daemon=True).start()
     
-    print("🚀 AutoGen Jarvis started!")
-    print("💬 Chat API: http://localhost:8005/chat")
-    print("❤️  Health: http://localhost:8005/health")
+    print("🚀 Intelligent Jarvis AI started!")
+    print("🧠 Intelligent Chat: http://0.0.0.0:8005/intelligent/chat")
+    print("❤️  Health: http://0.0.0.0:8005/health")
     
-    # Service loop
+    # Intelligent service loop
     running = True
     def signal_handler(sig, frame):
         nonlocal running
-        print("🛑 Shutting down...")
+        print("🛑 Intelligent Jarvis shutting down...")
         running = False
     
     signal.signal(signal.SIGTERM, signal_handler)
@@ -126,11 +237,16 @@ def serve():
     
     while running:
         try:
-            db_manager.update_agent_heartbeat("orchestrator_agent")
-            print("💚 AutoGen Jarvis operational")
+            # Update heartbeats
+            for agent in jarvis.specialized_agents.values():
+                db_manager.update_agent_heartbeat(agent.agent_id)
+            
+            db_manager.update_agent_heartbeat(jarvis.orchestrator.agent_id)
+            
+            print("🧠 Intelligent Jarvis operational")
             time.sleep(30)
         except Exception as e:
-            print(f"❌ Error: {e}")
+            print(f"❌ Service error: {e}")
             time.sleep(10)
 
 if __name__ == "__main__":

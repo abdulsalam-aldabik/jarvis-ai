@@ -15,6 +15,7 @@ pytest-playwright
 uvicorn
 fastapi
 psycopg2-binary
+sktime
 wittgenstein
 loguru
 fastapi-health
@@ -22,9 +23,3 @@ fastmcp
 aiohttp
 chromadb
 autogen-core
-autogen-agentchat
-sentence-transformers
-pandas
-numpy
-transformers
-hnswlib
