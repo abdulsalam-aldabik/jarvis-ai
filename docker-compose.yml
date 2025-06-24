@@ -42,19 +42,21 @@ services:
       MCP_PROXY_PORT: 8180
       MCP_PROXY_LOG_LEVEL: info
       ACCUWEATHER_API_KEY: ${ACCUWEATHER_API_KEY}
-      PYTHONPATH: /api
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: 1
     command: [
       "--port", "8180", 
       "--host", "0.0.0.0",
       "--named-server-config", "/config/mcp-servers.json",
       "--allow-origin", "*",
-      "--debug"
+      "--debug",
+      "--pass-environment"
     ]
     ports:
       - "8180:8180"
     volumes:
       - ./mcp-servers.json:/config/mcp-servers.json:ro
-      - ./api:/api:ro
+      - ./api:/app/api:ro
     depends_on:
       - postgres
 
