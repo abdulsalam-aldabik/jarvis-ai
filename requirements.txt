@@ -21,4 +21,4 @@ loguru
 fastapi-health
 fastmcp
 aiohttp
-chromadb-client
+chromadb

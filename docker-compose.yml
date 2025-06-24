@@ -88,6 +88,8 @@ services:
       - PYTHONPATH=/app
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - OLLAMA_URL=http://192.168.0.116:11434  # Ensure this matches your setup
+      - ACCUWEATHER_API_KEY=${ACCUWEATHER_API_KEY}  # Add this line
+      - CHROMA_URL=http://chroma:8000                # Add this line
     deploy:
       resources:
         limits:

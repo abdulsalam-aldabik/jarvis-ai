@@ -49,7 +49,7 @@ def cache_location_key(location: str, location_key: str):
 @mcp.tool()
 async def get_hourly_weather(location: str) -> Dict:
     """Get hourly weather forecast for a location."""
-    api_key = os.getenv("ACCUWEATHER_API_KEY")
+    api_key = os.getenv("ACCUWEATHER_API_KEY", "X9Yx6HmKtT1PGlLeIHcmdydJe1VLpsCP")
     if not api_key:
         raise Exception("ACCUWEATHER_API_KEY environment variable is required")
     
