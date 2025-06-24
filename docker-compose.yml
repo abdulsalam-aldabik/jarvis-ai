@@ -1,8 +1,7 @@
-version: "3.9"
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: jarvis-postgres
     restart: unless-stopped
     environment:
@@ -14,6 +13,11 @@ services:
       - ./infra/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jarvis -d jarvisdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   chroma:
     image: chromadb/chroma:latest
@@ -27,45 +31,47 @@ services:
     ports:
       - "8000:8000"
 
-  # ollama:
-  #   image: ollama/ollama:latest
-  #   container_name: jarvis-ollama
-  #   restart: unless-stopped
-  #   environment:
-  #     OLLAMA_MODELS_PATH: /models
-  #   volumes:
-  #     - ./data/ollama:/models
-  #   ports:
-  #     - "11434:11434"
 
   mcp-proxy:
-    image: sparfenyuk/mcp-proxy:latest
+    build:
+      context: .
+      dockerfile: docker/mcp-proxy.Dockerfile
     container_name: jarvis-mcp-proxy
     restart: unless-stopped
+    environment:
+      MCP_PROXY_PORT: 8180
+      MCP_PROXY_LOG_LEVEL: info
+      ACCUWEATHER_API_KEY: ${ACCUWEATHER_API_KEY}
+      PYTHONPATH: /api
     command: [
       "--port", "8180", 
       "--host", "0.0.0.0",
-      "--named-server", "weather", "python -m api.weather_mcp",
+      "--named-server-config", "/config/mcp-servers.json",
       "--allow-origin", "*",
       "--debug"
     ]
     ports:
       - "8180:8180"
+    volumes:
+      - ./mcp-servers.json:/config/mcp-servers.json:ro
+      - ./api:/api:ro
     depends_on:
       - postgres
 
 
 
-  weather-mcp:
-    build:
-      context: .
-      dockerfile: docker/weather-mcp.Dockerfile
-    container_name: jarvis-weather-mcp
-    restart: unless-stopped
-    environment:
-      OPEN_METEO_API_KEY: ${OPEN_METEO_API_KEY:-""}
-    depends_on:
-      - mcp-proxy
+  # weather-mcp:
+  #   build:
+  #     context: .
+  #     dockerfile: docker/weather-mcp.Dockerfile
+  #   container_name: jarvis-weather-mcp
+  #   restart: unless-stopped
+  #   environment:
+  #     ACCUWEATHER_API_KEY: ${ACCUWEATHER_API_KEY}
+  #   ports:
+  #     - "9000:9000"  # FastMCP default port
+
+
 
   agent:
     build:
@@ -73,8 +79,21 @@ services:
       dockerfile: docker/agent.Dockerfile
     container_name: jarvis-agent
     restart: unless-stopped
+    ports:
+      - "8005:8005"  # FastAPI health and API endpoints
+      - "8001:8001"  # Prometheus metrics endpoint
     # environment:
       # Add agent-specific env vars here
+    environment:
+      - PYTHONPATH=/app
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - OLLAMA_URL=http://192.168.0.116:11434  # Ensure this matches your setup
+    deploy:
+      resources:
+        limits:
+          memory: 4G  # Increase memory limit
+        reservations:
+          memory: 512M
     depends_on:
       - postgres
       - chroma
@@ -83,21 +102,66 @@ services:
     image: prom/prometheus:latest
     container_name: jarvis-prometheus
     restart: unless-stopped
+    user: "65534:65534"
     volumes:
-      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus  # Use named volume instead
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+      - '--web.external-url=http://100.76.141.29:9090'
     ports:
       - "9090:9090"
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    restart: unless-stopped
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($|/)'
+    ports:
+      - "9100:9100"
+  
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    restart: unless-stopped
+    privileged: true  # Required for proper container access
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+      - /var/snap/microk8s/common/run/containerd:/var/snap/microk8s/common/run/containerd:ro  # For MicroK8s
+    devices:
+      - /dev/kmsg
+    ports:
+      - "9080:8080"
+    command:
+      - '--housekeeping_interval=10s'
+      - '--docker_only=false'
+      - '--store_container_labels=false'
 
   grafana:
     image: grafana/grafana:latest
     container_name: jarvis-grafana
     restart: unless-stopped
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: "admin"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SERVER_HTTP_PORT: 3001
     volumes:
-      - grafana_data:/var/lib/grafana  # Use named volume
+      - grafana_data:/var/lib/grafana  # Use named volume instead of bind mount
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning
     ports:
       - "3001:3001"
 

@@ -18,3 +18,7 @@ psycopg2-binary
 sktime
 wittgenstein
 loguru
+fastapi-health
+fastmcp
+aiohttp
+chromadb-client

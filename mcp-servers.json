@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "weather": {
+      "command": "python",
+      "args": ["./api/weather.py"],
+      "env": {
+        "ACCUWEATHER_API_KEY": "X9Yx6HmKtT1PGlLeIHcmdydJe1VLpsCP"
+      }
+    }
+  }
+}
