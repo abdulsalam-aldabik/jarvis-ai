@@ -86,6 +86,7 @@ services:
       # Add agent-specific env vars here
     environment:
       - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
       - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - OLLAMA_URL=http://192.168.0.116:11434  # Ensure this matches your setup
       - ACCUWEATHER_API_KEY=${ACCUWEATHER_API_KEY}  # Add this line
@@ -97,8 +98,10 @@ services:
         reservations:
           memory: 512M
     depends_on:
-      - postgres
-      - chroma
+      postgres:
+        condition: service_healthy  # Wait for postgres to be healthy
+      chroma:
+        condition: service_started
 
   prometheus:
     image: prom/prometheus:latest
