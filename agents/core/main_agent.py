@@ -13,6 +13,10 @@ from agents.specialized.weather_agent import ReliableWeatherAgent
 from agents.specialized.routine_agent import ReliableRoutineAgent
 from agents.core.database import db_manager
 from config.settings import settings
+from agents.core.a2a_protocol import a2a_registry
+from fastapi import Request
+import uuid
+
 
 # Simple logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -31,7 +35,26 @@ class AutoGenJarvis:
     
     def __init__(self):
         self.orchestrator = orchestrator
+        # Initialize specialized agents (this will trigger A2A registration)
+        self._initialize_agents()
         logger.info("✅ AutoGen Jarvis initialized")
+        logger.info(f"🤖 A2A agents registered: {len(a2a_registry.agents)}")
+
+    def _initialize_agents(self):
+        """Initialize specialized agents with A2A registration"""
+        try:
+            # Import and initialize agents (this triggers A2A registration)
+            from agents.specialized.weather_agent import ReliableWeatherAgent
+            from agents.specialized.routine_agent import ReliableRoutineAgent
+            
+            # Create instances (A2A registration happens in __init__)
+            weather_agent = ReliableWeatherAgent()
+            routine_agent = ReliableRoutineAgent()
+            
+            logger.info("✅ Specialized agents initialized with A2A support")
+            
+        except Exception as e:
+            logger.error(f"❌ Agent initialization failed: {e}")
     
     async def chat(self, message: str) -> str:
         """Simple chat interface using AutoGen"""
@@ -80,13 +103,13 @@ def status():
 
 @app.command()
 def serve():
-    """Start AutoGen Jarvis service"""
+    """Start AutoGen Jarvis service with A2A protocol support"""
     # Start metrics
     start_http_server(8001)
     print("📊 Metrics server: http://localhost:8001")
     
     # FastAPI
-    app_api = FastAPI(title="AutoGen Jarvis", version="4.0.0")
+    app_api = FastAPI(title="AutoGen Jarvis with A2A", version="4.0.0")
     
     @app_api.post("/chat")
     async def chat_api(request: Dict[str, Any]):
@@ -100,6 +123,87 @@ def serve():
     @app_api.get("/health")
     async def health():
         return {"status": "healthy", "system": "AutoGen Jarvis"}
+    
+    # A2A Protocol Endpoints
+    @app_api.get("/.well-known/agent.json")
+    async def agent_discovery():
+        """A2A agent discovery endpoint"""
+        agents = a2a_registry.discover_agents()
+        return {
+            "agents": [agent.to_dict() for agent in agents],
+            "registry_info": {
+                "total_agents": len(agents),
+                "protocol_version": "1.0",
+                "supported_methods": ["request_response", "sse", "push_notification"]
+            }
+        }
+    
+    @app_api.get("/a2a/agents")
+    async def list_a2a_agents():
+        """List all A2A agents"""
+        agents = a2a_registry.discover_agents()
+        return {"agents": [agent.to_dict() for agent in agents]}
+    
+    @app_api.get("/a2a/agents/{agent_id}")
+    async def get_a2a_agent(agent_id: str):
+        """Get specific A2A agent card"""
+        agent = a2a_registry.get_agent_card(agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return agent.to_dict()
+    
+    @app_api.post("/a2a/agents/{agent_id}/request")
+    async def a2a_agent_request(agent_id: str, request: Dict[str, Any]):
+        """Send A2A request to specific agent"""
+        # Get the target agent
+        from agents.core.base_agent import agent_registry
+        
+        target_agent = agent_registry.get_agent(agent_id)
+        if not target_agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
+        # Check if agent supports A2A
+        if not hasattr(target_agent, 'handle_a2a_request'):
+            raise HTTPException(status_code=400, detail="Agent does not support A2A protocol")
+        
+        # Process A2A request
+        from_agent = request.get("from_agent", "external_client")
+        task = request.get("task", {})
+        
+        result = await target_agent.handle_a2a_request(from_agent, task)
+        return result
+    
+    @app_api.get("/a2a/agents/{agent_id}/health")
+    async def a2a_agent_health(agent_id: str):
+        """A2A agent health check"""
+        agent = a2a_registry.get_agent_card(agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        
+        return {
+            "agent_id": agent_id,
+            "status": "healthy",
+            "last_updated": agent.to_dict().get("last_updated"),
+            "skills_count": len(agent.skills)
+        }
+    
+    @app_api.get("/a2a/discover")
+    async def a2a_discover(skill: str = None):
+        """Discover A2A agents by skill"""
+        agents = a2a_registry.discover_agents(skill)
+        return {
+            "query": {"skill_filter": skill},
+            "agents": [agent.to_dict() for agent in agents],
+            "count": len(agents)
+        }
+    
+    @app_api.get("/a2a/communications")
+    async def a2a_communications():
+        """Get A2A communication logs"""
+        return {
+            "communications": a2a_registry.communication_log[-10:],  # Last 10
+            "total_communications": len(a2a_registry.communication_log)
+        }
     
     # Start FastAPI
     import uvicorn
