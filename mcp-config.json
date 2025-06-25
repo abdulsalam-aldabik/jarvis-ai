@@ -1,0 +1,26 @@
+{
+  "mcpProxy": {
+    "baseURL": "http://localhost:9190",
+    "addr": ":9190",
+    "name": "Jarvis MCP Proxy",
+    "version": "1.0.0",
+    "options": {
+      "panicIfInvalid": false,
+      "logEnabled": true,
+      "authTokens": [],
+      "enableHTTP": true,
+      "enableSSE": true,
+      "enableREST": true
+    }
+  },
+  "mcpServers": {
+    "weather": {
+      "transport": "sse",
+      "url": "http://192.168.0.207:8182/sse/"
+    },
+    "echo": {
+      "transport": "sse",
+      "url": "http://192.168.0.207:8181/sse/"
+    }
+  }
+}

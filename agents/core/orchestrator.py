@@ -16,35 +16,52 @@ class ReliableOrchestrator(AutoGenBaseAgent):
         super().__init__("orchestrator", "Reliable AutoGen orchestrator")
     
     async def process_message(self, message: str, ctx: MessageContext) -> str:
-        """Process message reliably"""
+        """Process message reliably with semantic memory"""
         try:
+            # Log the incoming message
+            db_manager.log_event("INFO", f"Orchestrator processing: {message[:100]}", 
+                            {"sender": str(ctx.sender)}, self.agent_id)
+            
             # Step 1: Check if this needs a specialist
             if await self._needs_weather_agent(message):
                 response = await self._delegate_to_weather(message)
                 if response:
+                    # Store interaction in semantic memory
                     await self._store_interaction(message, response)
                     return response
             
             if await self._needs_routine_agent(message):
                 response = await self._delegate_to_routine(message)
                 if response:
+                    # Store interaction in semantic memory
                     await self._store_interaction(message, response)
                     return response
             
-            # Step 2: Search relevant memory
+            # Step 2: Search relevant memory for context
             relevant_memory = self._search_relevant_memory(message)
             
-            # Step 3: Generate response with LLM
+            # Step 3: Generate response with LLM using memory context
             response = await self._generate_response_with_memory(message, relevant_memory)
             
-            # Step 4: Store this interaction
+            # Step 4: Store this interaction in semantic memory
             await self._store_interaction(message, response)
             
             return response
             
         except Exception as e:
-            db_manager.log_event("ERROR", f"Orchestrator failed: {str(e)}", {}, self.agent_id)
+            # Log the error
+            db_manager.log_event("ERROR", f"Orchestrator failed: {str(e)}", 
+                            {"message": message[:100]}, self.agent_id)
+            
+            # Store the failed interaction too (for learning)
+            try:
+                error_response = "I'm having trouble processing that request. Please try again."
+                await self._store_interaction(message, error_response)
+            except:
+                pass  # Don't let memory storage errors crash the system
+            
             return "I'm having trouble processing that request. Please try again."
+
     
     async def _needs_weather_agent(self, message: str) -> bool:
         """Simple, reliable weather detection"""

@@ -18,6 +18,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks: # --- ADD THIS BLOCK ---
+      - default
+      - jarvis-network
 
   chroma:
     image: chromadb/chroma:latest
@@ -30,35 +33,34 @@ services:
       - ./data/chroma:/data
     ports:
       - "8000:8000"
+    networks: # --- ADD THIS BLOCK ---
+      - default
+      - jarvis-network
 
 
-  mcp-proxy:
+  multi-mcp-proxy:
     build:
       context: .
-      dockerfile: docker/mcp-proxy.Dockerfile
-    container_name: jarvis-mcp-proxy
+      dockerfile: docker/multi-mcp-proxy.Dockerfile
+    container_name: jarvis-multi-mcp-proxy
     restart: unless-stopped
     environment:
-      MCP_PROXY_PORT: 8180
-      MCP_PROXY_LOG_LEVEL: info
       ACCUWEATHER_API_KEY: ${ACCUWEATHER_API_KEY}
-      PYTHONPATH: /app
-      PYTHONUNBUFFERED: 1
-    command: [
-      "--port", "8180", 
-      "--host", "0.0.0.0",
-      "--named-server-config", "/config/mcp-servers.json",
-      "--allow-origin", "*",
-      "--debug",
-      "--pass-environment"
-    ]
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      # NODE_ENV: production
+      # PYTHONPATH: /app  # Add this
     ports:
-      - "8180:8180"
+      # - "8180:8180"
+      - "9190:9190"  # Expose the MCP proxy on port 9190
     volumes:
-      - ./mcp-servers.json:/config/mcp-servers.json:ro
-      - ./api:/app/api:ro
+      # - ./mcp-config.json:/opt/mcp-proxy-server/config.json:ro
+      - ./mcp-config.json:/config/config.json:ro
+      - ./api:/app/api:ro  # Map your API files correctly
     depends_on:
       - postgres
+    networks:
+      - default
+      - jarvis-network
 
 
 
@@ -104,6 +106,9 @@ services:
         condition: service_healthy  # Wait for postgres to be healthy
       chroma:
         condition: service_started
+    networks: # --- ADD THIS BLOCK ---
+      - default
+      - jarvis-network
 
   prometheus:
     image: prom/prometheus:latest
@@ -120,6 +125,9 @@ services:
       - '--web.external-url=http://100.76.141.29:9090'
     ports:
       - "9090:9090"
+    networks: # --- ADD THIS BLOCK ---
+      - default
+      - jarvis-network
 
   node-exporter:
     image: prom/node-exporter:latest
@@ -135,6 +143,9 @@ services:
       - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($|/)'
     ports:
       - "9100:9100"
+    networks: # --- ADD THIS BLOCK ---
+      - default
+      - jarvis-network
   
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
@@ -156,6 +167,9 @@ services:
       - '--housekeeping_interval=10s'
       - '--docker_only=false'
       - '--store_container_labels=false'
+    networks: # --- ADD THIS BLOCK ---
+      - default
+      - jarvis-network
 
   grafana:
     image: grafana/grafana:latest
@@ -171,6 +185,9 @@ services:
       - ./infra/grafana/provisioning:/etc/grafana/provisioning
     ports:
       - "3001:3001"
+    networks: # --- ADD THIS BLOCK ---
+      - default
+      - jarvis-network
 
 volumes:
   postgres_data:
@@ -179,3 +196,7 @@ volumes:
     driver: local
   prometheus_data:
     driver: local
+
+networks:
+  jarvis-network:
+    driver: bridge

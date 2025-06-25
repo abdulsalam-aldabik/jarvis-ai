@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from config.settings import settings
 from agents.core.database import db_manager
 
+
 @dataclass
 class AgentTask:
     """Simple task structure for AutoGen messaging"""
@@ -39,6 +40,8 @@ class AutoGenBaseAgent(RoutedAgent):
         
         # Update heartbeat
         db_manager.update_agent_heartbeat(self.agent_id)
+
+        agent_registry.register_agent(self)
         
         # Register A2A card after initialization
         self._register_a2a_card()
@@ -78,7 +81,8 @@ class AutoGenBaseAgent(RoutedAgent):
         descriptions = {
             "weather": "Provides real-time weather information and forecasts for any global location using AccuWeather API",
             "routine": "Creates, manages, and optimizes daily routines and schedules based on user preferences and learned patterns",
-            "orchestrator": "Coordinates multi-agent workflows and manages task delegation across specialized agents"
+            "orchestrator": "Coordinates multi-agent workflows and manages task delegation across specialized agents",
+            "tool_discovery": "Discovers and manages MCP tools dynamically for enhanced agent capabilities"  # ADD THIS
         }
         return descriptions.get(self.agent_type, f"Specialized {self.agent_type} agent")
     
@@ -122,6 +126,18 @@ class AutoGenBaseAgent(RoutedAgent):
                         examples=[{
                             "input": {"task": "Get weather and plan routine", "agents_needed": ["weather", "routine"]},
                             "output": {"workflow_id": "wf_001", "status": "completed", "result": {"weather": "sunny", "routine": "outdoor_activities"}}
+                        }]
+                    )
+                ],
+                "tool_discovery": [
+                    A2ASkill(
+                        name="discover_tools",
+                        description="Discover available MCP tools dynamically",
+                        input_schema={"capability": "string"},
+                        output_schema={"tools_found": "number", "tools": "array"},
+                        examples=[{
+                            "input": {"capability": "weather"},
+                            "output": {"tools_found": 2, "tools": ["get_weather", "get_forecast"]}
                         }]
                     )
                 ]
@@ -191,18 +207,43 @@ class AutoGenBaseAgent(RoutedAgent):
                 
             return error_response
     
-    @message_handler
-    async def handle_user_message(self, message: str, ctx: MessageContext) -> str:
-        """AutoGen native message handler"""
+    # @message_handler
+    # async def handle_user_message(self, message: str, ctx: MessageContext) -> str:
+    #     """AutoGen native message handler with correct signature"""
+    #     try:
+    #         # Log the interaction
+    #         db_manager.log_event("INFO", f"Processing: {message[:100]}", 
+    #                         {"sender": str(ctx.sender)}, self.agent_id)
+            
+    #         # Process using agent-specific logic
+    #         response = await self.process_message(message, ctx)
+            
+    #         # Store in semantic memory
+    #         from learning.behavior.behavior_engine import add_to_semantic_memory
+    #         add_to_semantic_memory(
+    #             f"User: {message}\n{self.agent_type}: {response}",
+    #             {"type": "conversation", "agent": self.agent_type, "timestamp": time.time()}
+    #         )
+            
+    #         return response
+            
+    #     except Exception as e:
+    #         db_manager.log_event("ERROR", f"Message handling failed: {str(e)}", 
+    #                         {"message": message[:100]}, self.agent_id)
+    #         return f"I'm having trouble processing that request: {str(e)}"
+
+    
+    async def process_message(self, message: str, ctx: MessageContext) -> str:
+        """Process message with semantic memory storage"""
         try:
             # Log the interaction
             db_manager.log_event("INFO", f"Processing: {message[:100]}", 
-                               {"sender": str(ctx.sender)}, self.agent_id)
+                            {"sender": str(ctx.sender)}, self.agent_id)
             
-            # Process using agent-specific logic
-            response = await self.process_message(message, ctx)
+            # Generate response (override this in specialized agents)
+            response = f"I'm a {self.agent_type} agent. I received: {message}"
             
-            # Store in semantic memory
+            # Store in semantic memory - MOVED HERE FROM handle_user_message
             from learning.behavior.behavior_engine import add_to_semantic_memory
             add_to_semantic_memory(
                 f"User: {message}\n{self.agent_type}: {response}",
@@ -212,10 +253,86 @@ class AutoGenBaseAgent(RoutedAgent):
             return response
             
         except Exception as e:
-            db_manager.log_event("ERROR", f"Message handling failed: {str(e)}", 
-                               {"message": message[:100]}, self.agent_id)
+            db_manager.log_event("ERROR", f"Message processing failed: {str(e)}", 
+                            {"message": message[:100]}, self.agent_id)
             return f"I'm having trouble processing that request: {str(e)}"
+
+
+    async def discover_available_tools(self) -> Dict[str, Any]:
+        """Simple tool discovery via multi-mcp-proxy"""
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get("http://jarvis-multi-mcp-proxy:8180/tools/list", timeout=10) as response:
+                    if response.status == 200:
+                        tools = await response.json()
+                        return {
+                            "success": True,
+                            "tools": tools,
+                            "count": len(tools.get("tools", []))
+                        }
+            return {"success": False, "error": "Could not connect to MCP proxy"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def call_mcp_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Call an MCP tool via multi-mcp-proxy"""
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                payload = {
+                    "tool": tool_name,
+                    "arguments": arguments
+                }
+                async with session.post("http://jarvis-multi-mcp-proxy:8180/tools/call", 
+                                    json=payload, timeout=30) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return {"success": True, "result": result}
+                    else:
+                        error = await response.text()
+                        return {"success": False, "error": error}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+
+    def _extract_arguments_from_capability(self, capability_description: str, tool) -> Dict[str, Any]:
+        """Extract arguments from capability description for tool invocation"""
+        # Simple argument extraction (can be enhanced with LLM)
+        arguments = {}
+        
+        # Common patterns
+        if "weather" in capability_description.lower():
+            # Extract location
+            import re
+            location_match = re.search(r"(?:in|for|at)\s+([A-Za-z\s]+)", capability_description, re.IGNORECASE)
+            if location_match:
+                arguments["location"] = location_match.group(1).strip()
+            else:
+                arguments["location"] = "Brussels"  # Default
+        
+        return arguments
+
+
+class AgentRegistry:
+    """Global agent registry for AutoGen agents"""
     
-    async def process_message(self, message: str, ctx: MessageContext) -> str:
-        """Override this in specialized agents"""
-        return f"I'm a {self.agent_type} agent. I received: {message}"
+    def __init__(self):
+        self._agents = {}
+    
+    def register_agent(self, agent):
+        """Register an agent in the registry"""
+        self._agents[agent.agent_id] = agent
+        db_manager.log_event("INFO", f"Agent registered: {agent.agent_id}", 
+                            {"agent_type": agent.agent_type}, agent_id=agent.agent_id)
+    
+    def get_agent(self, agent_id: str):
+        """Get agent by ID"""
+        return self._agents.get(agent_id)
+    
+    def list_agents(self) -> List[str]:
+        """List all registered agent IDs"""
+        return list(self._agents.keys())
+
+# Create global agent registry instance
+agent_registry = AgentRegistry()

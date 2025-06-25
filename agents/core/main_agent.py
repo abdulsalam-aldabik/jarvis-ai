@@ -5,7 +5,7 @@ import logging
 import json
 from typing import Dict, Any
 import typer
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from prometheus_client import start_http_server, Counter
 from autogen_core import MessageContext
 from agents.core.orchestrator import orchestrator
@@ -14,6 +14,8 @@ from agents.specialized.routine_agent import ReliableRoutineAgent
 from agents.core.database import db_manager
 from config.settings import settings
 from agents.core.a2a_protocol import a2a_registry
+from agents.core.base_agent import agent_registry
+
 from fastapi import Request
 import uuid
 
@@ -39,6 +41,8 @@ class AutoGenJarvis:
         self._initialize_agents()
         logger.info("✅ AutoGen Jarvis initialized")
         logger.info(f"🤖 A2A agents registered: {len(a2a_registry.agents)}")
+        self._schedule_initial_discovery()
+
 
     def _initialize_agents(self):
         """Initialize specialized agents with A2A registration"""
@@ -46,6 +50,7 @@ class AutoGenJarvis:
             # Import and initialize agents (this triggers A2A registration)
             from agents.specialized.weather_agent import ReliableWeatherAgent
             from agents.specialized.routine_agent import ReliableRoutineAgent
+        
             
             # Create instances (A2A registration happens in __init__)
             weather_agent = ReliableWeatherAgent()
@@ -53,24 +58,50 @@ class AutoGenJarvis:
             
             logger.info("✅ Specialized agents initialized with A2A support")
             
+            
         except Exception as e:
             logger.error(f"❌ Agent initialization failed: {e}")
     
+    
+    async def _initial_tool_discovery(self):
+        """Perform initial tool discovery on startup"""
+        try:
+            
+            logger.info("✅ Initial MCP tool discovery completed")
+        except Exception as e:
+            logger.error(f"❌ Initial tool discovery failed: {e}")
+
+    def _schedule_initial_discovery(self):
+        """Schedule initial tool discovery when event loop becomes available"""
+        try:
+            # Check if there's already a running event loop
+            loop = asyncio.get_running_loop()
+            # If we get here, there's a running loop - schedule the task
+            asyncio.create_task(self._initial_tool_discovery())
+            logger.info("📋 Initial tool discovery scheduled")
+        except RuntimeError:
+            # No running event loop - we'll trigger discovery later when needed
+            logger.info("📋 Tool discovery will be triggered on first use")
+    
+
     async def chat(self, message: str) -> str:
         """Simple chat interface using AutoGen"""
         REQUESTS.inc()
         
         try:
+            
             # Use AutoGen's native message handling
             context = SimpleMessageContext("user")
-            response = await self.orchestrator.handle_user_message(message, context)
+            response = await self.orchestrator.process_message(message, context)
             
             return response
             
         except Exception as e:
             logger.error(f"❌ Chat failed: {e}")
             return "I'm having trouble right now. Please try again."
+    
 
+    
 # Initialize Jarvis
 jarvis = AutoGenJarvis()
 
@@ -100,6 +131,8 @@ def status():
         print(f"📊 Available agents: weather, routine")
     except Exception as e:
         print(f"❌ Status check failed: {e}")
+
+
 
 @app.command()
 def serve():
@@ -204,6 +237,41 @@ def serve():
             "communications": a2a_registry.communication_log[-10:],  # Last 10
             "total_communications": len(a2a_registry.communication_log)
         }
+    
+
+    @app_api.get("/tools/list")
+    async def list_tools():
+        """List all available MCP tools via multi-mcp-proxy"""
+        import aiohttp
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get("http://jarvis-multi-mcp-proxy:8180/tools/list") as response:
+                    return await response.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app_api.post("/tools/call")
+    async def call_tool(request: Dict[str, Any]):
+        """Call an MCP tool via multi-mcp-proxy"""
+        import aiohttp
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post("http://jarvis-multi-mcp-proxy:8180/tools/call", 
+                                    json=request) as response:
+                    return await response.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app_api.get("/tools/servers")
+    async def list_servers():
+        """List all MCP servers"""
+        import aiohttp
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get("http://jarvis-multi-mcp-proxy:8180/servers") as response:
+                    return await response.json()
+        except Exception as e:
+            return {"error": str(e)}
     
     # Start FastAPI
     import uvicorn
