@@ -3,172 +3,335 @@ import time
 import signal
 import logging
 import json
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 import typer
 from fastapi import FastAPI, HTTPException
 from prometheus_client import start_http_server, Counter
-from autogen_core import MessageContext
+from autogen_core import MessageContext, RoutedAgent, message_handler
 from agents.core.orchestrator import orchestrator
 from agents.specialized.weather_agent import ReliableWeatherAgent
 from agents.specialized.routine_agent import ReliableRoutineAgent
 from agents.core.database import db_manager
 from config.settings import settings
 from agents.core.a2a_protocol import a2a_registry
-from agents.core.base_agent import agent_registry
-
-from fastapi import Request
+from agents.core.base_agent import agent_registry, AutoGenBaseAgent
+from agents.core.logging_config import log_structured
+from agents.core.agentic_workflow import HybridAgenticWorkflow
+from agents.core.agentic_state import ReasoningState, ReasoningStep
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 import uuid
 
-
 # Simple logging
-logging.basicConfig(level=logging.INFO, format='%(message)s')
+# logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger("jarvis")
 
 # Prometheus metrics
 REQUESTS = Counter('jarvis_requests_total', 'Total requests')
 
-class SimpleMessageContext:
-    """Simple context for AutoGen messages"""
-    def __init__(self, sender: str = "user"):
-        self.sender = sender
-
-class AutoGenJarvis:
-    """Simple AutoGen-based Jarvis interface"""
+class AutoGenLangGraphHybrid:
+    """Hybrid system combining AutoGen agents with LangGraph workflows - SINGLETON"""
+    
+    _instance = None
+    _initialized = False
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
     
     def __init__(self):
-        self.orchestrator = orchestrator
-        # Initialize specialized agents (this will trigger A2A registration)
+        # ✅ FIXED: Only initialize once
+        if self._initialized:
+            return
+        
+        self.specialized_agents = {}
+        self.workflow_system = None
         self._initialize_agents()
-        logger.info("✅ AutoGen Jarvis initialized")
-        logger.info(f"🤖 A2A agents registered: {len(a2a_registry.agents)}")
-        self._schedule_initial_discovery()
+        self._initialize_workflow()
+        
+        # Mark as initialized
+        self.__class__._initialized = True
+        logger.info("✅ AutoGen-LangGraph Hybrid initialized (singleton)")
 
 
     def _initialize_agents(self):
-        """Initialize specialized agents with A2A registration"""
+        """Initialize specialized AutoGen agents - ONLY ONCE"""
         try:
-            # Import and initialize agents (this triggers A2A registration)
-            from agents.specialized.weather_agent import ReliableWeatherAgent
-            from agents.specialized.routine_agent import ReliableRoutineAgent
-        
+            self.orchestrator = orchestrator
             
-            # Create instances (A2A registration happens in __init__)
-            weather_agent = ReliableWeatherAgent()
-            routine_agent = ReliableRoutineAgent()
+            if not hasattr(self, '_agents_created'):
+                # Initialize specialized agents
+                self.specialized_agents = {
+                    "weather": ReliableWeatherAgent(),
+                    "routine": ReliableRoutineAgent(),
+                    "orchestrator": self.orchestrator
+                }
+                self._agents_created = True
+            else:
+                # Use existing agents
+                self.specialized_agents = {
+                    "weather": getattr(self, '_weather_agent', ReliableWeatherAgent()),
+                    "routine": getattr(self, '_routine_agent', ReliableRoutineAgent()),
+                    "orchestrator": self.orchestrator
+                }
             
-            logger.info("✅ Specialized agents initialized with A2A support")
+            # Cache agents to prevent recreation
+            self._weather_agent = self.specialized_agents["weather"]
+            self._routine_agent = self.specialized_agents["routine"]
             
+            logger.info(f"✅ Initialized {len(self.specialized_agents)} specialized agents (singleton)")
             
         except Exception as e:
             logger.error(f"❌ Agent initialization failed: {e}")
-    
-    
-    async def _initial_tool_discovery(self):
-        """Perform initial tool discovery on startup"""
+            raise
+
+    def _initialize_workflow(self):
+        """Initialize the LangGraph workflow system - ONLY ONCE"""
         try:
+            if not self.workflow_system:
+                # Create workflow system with access to AutoGen agents
+                self.workflow_system = HybridAgenticWorkflow(
+                    database=db_manager,
+                    autogen_agents=self.specialized_agents
+                )
+                logger.info("✅ LangGraph workflow system initialized (singleton)")
             
-            logger.info("✅ Initial MCP tool discovery completed")
         except Exception as e:
-            logger.error(f"❌ Initial tool discovery failed: {e}")
+            logger.error(f"❌ Workflow initialization failed: {e}")
+            raise
 
-    def _schedule_initial_discovery(self):
-        """Schedule initial tool discovery when event loop becomes available"""
+
+    async def process_message(self, message: str, thread_id: str = None) -> str:
+        """Process message through the hybrid workflow - FIXED STATE CONVERSION"""
         try:
-            # Check if there's already a running event loop
-            loop = asyncio.get_running_loop()
-            # If we get here, there's a running loop - schedule the task
-            asyncio.create_task(self._initial_tool_discovery())
-            logger.info("📋 Initial tool discovery scheduled")
-        except RuntimeError:
-            # No running event loop - we'll trigger discovery later when needed
-            logger.info("📋 Tool discovery will be triggered on first use")
-    
+            thread_id = thread_id or str(uuid.uuid4())
+            
+            # ✅ CRITICAL FIX: Create dict input that matches HybridAgentState TypedDict
+            workflow_input = {
+                "session_id": thread_id,
+                "agent_id": "hybrid_main",
+                "user_input": message
+            }
+            
+            # ✅ FIXED: Call the workflow with dict input (not ReasoningState)
+            final_result = await self.workflow_system.run(workflow_input)
+            
+            # ✅ IMPROVED: Extract response from dict result
+            logger.info(f"Workflow result type: {type(final_result)}")
+            logger.info(f"Final result keys: {list(final_result.keys()) if isinstance(final_result, dict) else 'Not a dict'}")
+            
+            # Extract final response from dict result
+            final_response = final_result.get("final_response", "") if isinstance(final_result, dict) else ""
+            
+            if final_response and final_response.strip():
+                logger.info(f"Using final response: {final_response[:100]}")
+                return final_response.strip()
+            
+            # Fallback to observation results
+            observations = final_result.get("observations", []) if isinstance(final_result, dict) else []
+            successful_obs = [obs for obs in observations if obs.get("success", False)]
+            
+            if successful_obs:
+                for obs in successful_obs:
+                    result = obs.get("result", "")
+                    if result and str(result).strip() and not str(result).startswith("Interaction stored"):
+                        logger.info(f"Using observation result: {str(result)[:100]}")
+                        return str(result).strip()
+            
+            # Input-based fallback
+            input_lower = message.lower()
+            if any(word in input_lower for word in ["hello", "hi", "hey"]):
+                return "Hello! I'm Jarvis, your AI assistant. How can I help you?"
+            elif any(word in input_lower for word in ["weather", "temperature"]):
+                return "I'd be happy to help with weather information. Could you specify a location?"
+            else:
+                return "I understand you're asking me something. How can I help you?"
+            
+        except Exception as e:
+            logger.error(f"Hybrid processing failed: {e}")
+            return f"I encountered an error: {str(e)}"
 
-    async def chat(self, message: str) -> str:
-        """Simple chat interface using AutoGen"""
-        REQUESTS.inc()
+
+
+    def get_system_status(self) -> Dict[str, Any]:
+        """Get comprehensive system status"""
+        try:
+            db_health = db_manager.health_check()
+            
+            return {
+                "status": "healthy",
+                "system_type": "AutoGen-LangGraph Hybrid (Singleton)",
+                "agents": {
+                    "count": len(self.specialized_agents),
+                    "types": list(self.specialized_agents.keys())
+                },
+                "workflow": {
+                    "initialized": self.workflow_system is not None,
+                    "type": "LangGraph"
+                },
+                "database": db_health.get("status", "unknown"),
+                "a2a_agents": len(a2a_registry.agents),
+                "timestamp": time.time(),
+                "singleton_status": "initialized" if self._initialized else "not_initialized"
+            }
+        except Exception as e:
+            return {
+                "status": "unhealthy",
+                "error": str(e),
+                "timestamp": time.time()
+            }
+
+class JarvisMainAgent(AutoGenBaseAgent):
+    """Main agent that uses the hybrid system - SINGLETON AWARE"""
+    
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(AutoGenBaseAgent, cls).__new__(cls)
+        return cls._instance
+    
+    def __init__(self):
+        # ✅ FIXED: Only initialize once
+        if hasattr(self, '_agent_initialized'):
+            return
+            
+        super().__init__(
+            name="jarvis_main",
+            description="Main Jarvis agent with AutoGen-LangGraph hybrid processing",
+            agent_type="hybrid_main"
+        )
         
-        try:
-            
-            # Use AutoGen's native message handling
-            context = SimpleMessageContext("user")
-            response = await self.orchestrator.process_message(message, context)
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"❌ Chat failed: {e}")
-            return "I'm having trouble right now. Please try again."
-    
+        self.hybrid_system = hybrid_system
+        self._agent_initialized = True
 
-    
-# Initialize Jarvis
-jarvis = AutoGenJarvis()
+
+    async def agentic_chat(self, message: str, thread_id: str = None) -> str:
+        """Enhanced agentic chat using hybrid system"""
+        return await self.hybrid_system.process_message(message, thread_id)
+
+    @message_handler
+    async def handle_message(self, message: str, ctx: MessageContext) -> str:
+        """AutoGen message handler"""
+        return await self.agentic_chat(message)
+
+# Initialize the hybrid system (singleton)
+hybrid_system = AutoGenLangGraphHybrid()
 
 # CLI Commands
 app = typer.Typer()
 
 @app.command()
+def agentic_chat():
+    """Interactive agentic chat with AutoGen-LangGraph hybrid"""
+    print("🚀 Jarvis Hybrid Chat (AutoGen + LangGraph)")
+    print("Type 'quit' to exit\n")
+    
+    async def chat_loop():
+        agent = JarvisMainAgent()
+        thread_id = str(uuid.uuid4())
+        
+        while True:
+            try:
+                user_input = input("You: ").strip()
+                if user_input.lower() in ['quit', 'exit']:
+                    break
+                
+                if user_input:
+                    print("🧠 Processing with hybrid workflow...", end="", flush=True)
+                    response = await agent.agentic_chat(user_input, thread_id)
+                    print(f"\r🤖 Jarvis: {response}\n")
+                
+            except KeyboardInterrupt:
+                print("\n\nGoodbye! 👋")
+                break
+            except Exception as e:
+                print(f"\n❌ Error: {e}\n")
+    
+    asyncio.run(chat_loop())
+
+@app.command()
 def chat(message: str):
-    """Chat with AutoGen Jarvis"""
+    """Single chat message with hybrid system"""
     print(f"🧠 You: {message}")
     
-    # Run async chat
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    response = loop.run_until_complete(jarvis.chat(message))
-    loop.close()
+    async def single_chat():
+        agent = JarvisMainAgent()
+        response = await agent.agentic_chat(message)
+        print(f"🤖 Jarvis: {response}")
     
-    print(f"🤖 Jarvis: {response}")
+    asyncio.run(single_chat())
 
 @app.command() 
 def status():
-    """Show system status"""
+    """Show comprehensive system status"""
     try:
-        health = db_manager.health_check()
-        print(f"🏥 Database: {health.get('status', 'unknown')}")
-        print(f"🤖 Orchestrator: Active")
-        print(f"📊 Available agents: weather, routine")
+        status_info = hybrid_system.get_system_status()
+        
+        print(f"🏥 System Status: {status_info['status']}")
+        print(f"🤖 System Type: {status_info['system_type']}")
+        print(f"👥 Agents: {status_info['agents']['count']} ({', '.join(status_info['agents']['types'])})")
+        print(f"🔄 Workflow: {'✅ Ready' if status_info['workflow']['initialized'] else '❌ Not Ready'}")
+        print(f"💾 Database: {status_info['database']}")
+        print(f"🤝 A2A Agents: {status_info['a2a_agents']}")
+        
     except Exception as e:
         print(f"❌ Status check failed: {e}")
 
-
-
 @app.command()
 def serve():
-    """Start AutoGen Jarvis service with A2A protocol support"""
-    # Start metrics
+    """Start the hybrid Jarvis service with full API"""
+    # Start metrics server
     start_http_server(8001)
     print("📊 Metrics server: http://localhost:8001")
     
-    # FastAPI
-    app_api = FastAPI(title="AutoGen Jarvis with A2A", version="4.0.0")
+    # FastAPI application
+    app_api = FastAPI(title="Jarvis Hybrid System", version="5.0.0")
     
     @app_api.post("/chat")
     async def chat_api(request: Dict[str, Any]):
         message = request.get("message", "")
+        thread_id = request.get("thread_id")
+        
         if not message:
             return {"error": "Message required"}
         
-        response = await jarvis.chat(message)
-        return {"response": response}
+        agent = JarvisMainAgent()
+        response = await agent.agentic_chat(message, thread_id)
+        return {
+            "response": response, 
+            "thread_id": thread_id or str(uuid.uuid4()),
+            "system": "hybrid_singleton"
+        }
     
     @app_api.get("/health")
     async def health():
-        return {"status": "healthy", "system": "AutoGen Jarvis"}
+        return hybrid_system.get_system_status()
     
-    # A2A Protocol Endpoints
+    @app_api.get("/agents")
+    async def list_agents():
+        """List all available agents"""
+        return {
+            "autogen_agents": list(hybrid_system.specialized_agents.keys()),
+            "a2a_agents": len(a2a_registry.agents),
+            "total": len(hybrid_system.specialized_agents)
+        }
+    
+    # A2A Protocol endpoints
     @app_api.get("/.well-known/agent.json")
     async def agent_discovery():
-        """A2A agent discovery endpoint"""
         agents = a2a_registry.discover_agents()
         return {
             "agents": [agent.to_dict() for agent in agents],
-            "registry_info": {
-                "total_agents": len(agents),
-                "protocol_version": "1.0",
-                "supported_methods": ["request_response", "sse", "push_notification"]
-            }
+            "system_type": "hybrid_autogen_langgraph",
+            "capabilities": [
+                "agentic_reasoning", 
+                "multi_agent_orchestration", 
+                "mcp_tools", 
+                "semantic_memory",
+                "workflow_management",
+                "singleton_architecture"
+            ]
         }
     
     @app_api.get("/a2a/agents")
@@ -188,23 +351,17 @@ def serve():
     @app_api.post("/a2a/agents/{agent_id}/request")
     async def a2a_agent_request(agent_id: str, request: Dict[str, Any]):
         """Send A2A request to specific agent"""
-        # Get the target agent
-        from agents.core.base_agent import agent_registry
-        
         target_agent = agent_registry.get_agent(agent_id)
         if not target_agent:
             raise HTTPException(status_code=404, detail="Agent not found")
         
-        # Check if agent supports A2A
-        if not hasattr(target_agent, 'handle_a2a_request'):
-            raise HTTPException(status_code=400, detail="Agent does not support A2A protocol")
+        # Route through hybrid system
+        message = request.get("task", {}).get("message", "")
+        if message:
+            response = await hybrid_system.process_message(message)
+            return {"response": response, "agent_id": agent_id}
         
-        # Process A2A request
-        from_agent = request.get("from_agent", "external_client")
-        task = request.get("task", {})
-        
-        result = await target_agent.handle_a2a_request(from_agent, task)
-        return result
+        return {"error": "No message provided"}
     
     @app_api.get("/a2a/agents/{agent_id}/health")
     async def a2a_agent_health(agent_id: str):
@@ -216,64 +373,54 @@ def serve():
         return {
             "agent_id": agent_id,
             "status": "healthy",
+            "system": "hybrid",
             "last_updated": agent.to_dict().get("last_updated"),
             "skills_count": len(agent.skills)
         }
     
-    @app_api.get("/a2a/discover")
-    async def a2a_discover(skill: str = None):
-        """Discover A2A agents by skill"""
-        agents = a2a_registry.discover_agents(skill)
+    @app_api.get("/workflow/status")
+    async def workflow_status():
+        """Get workflow system status"""
         return {
-            "query": {"skill_filter": skill},
-            "agents": [agent.to_dict() for agent in agents],
-            "count": len(agents)
+            "workflow_initialized": hybrid_system.workflow_system is not None,
+            "workflow_type": "LangGraph",
+            "available_nodes": [
+                "analyze_with_memory",
+                "plan_with_agents", 
+                "discover_mcp_tools",
+                "execute_with_autogen",
+                "observe_and_learn",
+                "adapt_strategy",
+                "finalize_with_memory"
+            ]
         }
-    
-    @app_api.get("/a2a/communications")
-    async def a2a_communications():
-        """Get A2A communication logs"""
-        return {
-            "communications": a2a_registry.communication_log[-10:],  # Last 10
-            "total_communications": len(a2a_registry.communication_log)
-        }
-    
 
     @app_api.get("/tools/list")
     async def list_tools():
-        """List all available MCP tools via multi-mcp-proxy"""
+        """List all available MCP tools"""
         import aiohttp
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get("http://jarvis-multi-mcp-proxy:8180/tools/list") as response:
-                    return await response.json()
+                async with session.get(f"{settings.mcp.proxy_url}/tools/list", timeout=10) as response:
+                    if response.status == 200:
+                        return await response.json()
+                    return {"error": f"MCP proxy returned {response.status}"}
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": str(e), "mcp_proxy_url": settings.mcp.proxy_url}
 
     @app_api.post("/tools/call")
     async def call_tool(request: Dict[str, Any]):
-        """Call an MCP tool via multi-mcp-proxy"""
+        """Call an MCP tool"""
         import aiohttp
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post("http://jarvis-multi-mcp-proxy:8180/tools/call", 
-                                    json=request) as response:
-                    return await response.json()
-        except Exception as e:
-            return {"error": str(e)}
-
-    @app_api.get("/tools/servers")
-    async def list_servers():
-        """List all MCP servers"""
-        import aiohttp
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get("http://jarvis-multi-mcp-proxy:8180/servers") as response:
+                async with session.post(f"{settings.mcp.proxy_url}/tools/call", 
+                                    json=request, timeout=30) as response:
                     return await response.json()
         except Exception as e:
             return {"error": str(e)}
     
-    # Start FastAPI
+    # Start FastAPI server
     import uvicorn
     import threading
     
@@ -282,15 +429,17 @@ def serve():
     
     threading.Thread(target=run_api, daemon=True).start()
     
-    print("🚀 AutoGen Jarvis started!")
+    print("🚀 Jarvis Hybrid System started!")
     print("💬 Chat API: http://localhost:8005/chat")
     print("❤️  Health: http://localhost:8005/health")
+    print("🔄 Workflow: AutoGen + LangGraph integration active")
+    print("🤝 A2A Protocol: http://localhost:8005/.well-known/agent.json")
     
-    # Service loop
+    # Service monitoring loop
     running = True
     def signal_handler(sig, frame):
         nonlocal running
-        print("🛑 Shutting down...")
+        print("🛑 Shutting down hybrid system...")
         running = False
     
     signal.signal(signal.SIGTERM, signal_handler)
@@ -298,11 +447,20 @@ def serve():
     
     while running:
         try:
-            db_manager.update_agent_heartbeat("orchestrator_agent")
-            print("💚 AutoGen Jarvis operational")
+            # Update heartbeats for all agents
+            for agent_id in hybrid_system.specialized_agents.keys():
+                db_manager.update_agent_heartbeat(agent_id)
+            
+            # Log system status
+            status = hybrid_system.get_system_status()
+            if status["status"] == "healthy":
+                print("💚 Jarvis Hybrid System operational")
+            else:
+                print(f"⚠️  System status: {status.get('error', 'unknown issue')}")
+            
             time.sleep(30)
         except Exception as e:
-            print(f"❌ Error: {e}")
+            print(f"❌ Monitoring error: {e}")
             time.sleep(10)
 
 if __name__ == "__main__":

@@ -45,6 +45,20 @@ class APIConfig:
             issues.append("ACCUWEATHER_API_KEY not configured - weather features will be limited")
         return issues
 
+@dataclass 
+class MCPConfig:
+    """MCP Protocol configuration - ADDED THIS SECTION"""
+    proxy_url: str = os.getenv("MCP_PROXY_URL", "http://multi-mcp-proxy:9190")
+    weather_server_url: str = os.getenv("MCP_WEATHER_URL", "http://weather-mcp:8182")
+    echo_server_url: str = os.getenv("MCP_ECHO_URL", "http://echo-mcp:8181")
+    timeout_seconds: int = int(os.getenv("MCP_TIMEOUT", "10"))
+    
+    def validate(self) -> List[str]:
+        issues = []
+        if not self.proxy_url:
+            issues.append("MCP_PROXY_URL not configured")
+        return issues
+
 @dataclass
 class ServiceConfig:
     """Service configuration"""
@@ -66,6 +80,7 @@ class AppSettings:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     api: APIConfig = field(default_factory=APIConfig)
+    mcp: MCPConfig = field(default_factory=MCPConfig)  # ✅ ADDED MCP CONFIG
     service: ServiceConfig = field(default_factory=ServiceConfig)
     
     def validate(self) -> Dict[str, Any]:
@@ -74,6 +89,7 @@ class AppSettings:
         all_issues.extend(self.database.validate())
         all_issues.extend(self.llm.validate())
         all_issues.extend(self.api.validate())
+        all_issues.extend(self.mcp.validate())  # ✅ ADDED MCP VALIDATION
         all_issues.extend(self.service.validate())
         
         return {
@@ -82,6 +98,7 @@ class AppSettings:
             "config_summary": {
                 "database_url": self.database.postgres_url,
                 "ollama_url": self.llm.ollama_url,
+                "mcp_proxy_url": self.mcp.proxy_url,  # ✅ ADDED MCP INFO
                 "weather_api_configured": bool(self.api.accuweather_key),
                 "debug_mode": self.service.debug_mode,
                 "ports": {

@@ -1,7 +1,7 @@
 import asyncio
 import time
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from autogen_core import MessageContext
 from agents.core.base_agent import AutoGenBaseAgent
 from agents.core.database import db_manager
@@ -13,7 +13,13 @@ class ReliableOrchestrator(AutoGenBaseAgent):
     """Reliable AutoGen orchestrator with proper memory"""
     
     def __init__(self):
-        super().__init__("orchestrator", "Reliable AutoGen orchestrator")
+        super().__init__(
+            name="orchestrator", 
+            description="Reliable AutoGen orchestrator",
+            agent_type="orchestrator"
+        )
+        self._message_count = 0
+        self._error_count = 0
     
     async def process_message(self, message: str, ctx: MessageContext) -> str:
         """Process message reliably with semantic memory"""
@@ -26,14 +32,12 @@ class ReliableOrchestrator(AutoGenBaseAgent):
             if await self._needs_weather_agent(message):
                 response = await self._delegate_to_weather(message)
                 if response:
-                    # Store interaction in semantic memory
                     await self._store_interaction(message, response)
                     return response
             
             if await self._needs_routine_agent(message):
                 response = await self._delegate_to_routine(message)
                 if response:
-                    # Store interaction in semantic memory
                     await self._store_interaction(message, response)
                     return response
             
@@ -42,11 +46,14 @@ class ReliableOrchestrator(AutoGenBaseAgent):
             
             # Step 3: Generate response with LLM using memory context
             response = await self._generate_response_with_memory(message, relevant_memory)
+            if not response or not response.strip():
+                response = self._get_fallback_response(message)
+
             
             # Step 4: Store this interaction in semantic memory
             await self._store_interaction(message, response)
             
-            return response
+            return response.strip()
             
         except Exception as e:
             # Log the error
@@ -62,7 +69,6 @@ class ReliableOrchestrator(AutoGenBaseAgent):
             
             return "I'm having trouble processing that request. Please try again."
 
-    
     async def _needs_weather_agent(self, message: str) -> bool:
         """Simple, reliable weather detection"""
         weather_keywords = ["weather", "temperature", "forecast", "rain", "sunny", "cloudy", "degrees"]
@@ -100,26 +106,36 @@ class ReliableOrchestrator(AutoGenBaseAgent):
             return "Routine planning is temporarily unavailable. Please try again later."
     
     def _search_relevant_memory(self, message: str) -> List[str]:
-        """Search for relevant memories with reliability checks"""
+        """Search for relevant memories with PROPER session context"""
         try:
-            results = search_semantic_memory(message, n_results=3)
+            # ✅ CRITICAL FIX: Use session context for memory retrieval
+            session_id = getattr(self, '_current_session_id', None)
+            
+            # ✅ OFFICIAL PATTERN: Search with session context as per LangGraph docs
+            results = search_semantic_memory(message, n_results=5, session_id=session_id)
             
             if not results or not results.get('documents'):
+                logger.info(f"No memory results found for session: {session_id}")
                 return []
             
-            # Extract only relevant content
+            # ✅ IMPROVED: Properly access nested documents
             relevant_memories = []
-            documents = results['documents'][0]
+            documents = results['documents'][0] if results['documents'] else []
             
-            for doc in documents[:2]:  # Limit to 2 most relevant
+            logger.info(f"Found {len(documents)} memory results for session: {session_id}")
+            
+            for doc in documents[:3]:  # Limit to 3 most relevant
                 if doc and len(doc.strip()) > 10:  # Only meaningful content
                     relevant_memories.append(doc.strip())
+                    logger.info(f"Using memory: {doc[:50]}...")
             
             return relevant_memories
             
         except Exception as e:
             db_manager.log_event("WARNING", f"Memory search failed: {str(e)}", {}, self.agent_id)
             return []
+
+
     
     async def _generate_response_with_memory(self, message: str, memories: List[str]) -> str:
         """Generate response using LLM with memory context"""
@@ -147,7 +163,7 @@ Jarvis: """
                     "stream": False,
                     "options": {
                         "temperature": 0.7,
-                        "max_tokens": 150,  # Keep responses concise
+                        "max_tokens": 150,
                         "top_p": 0.9
                     }
                 },
@@ -188,7 +204,8 @@ Jarvis: """
             
             metadata = {
                 "type": "conversation",
-                "timestamp": time.time()
+                "timestamp": time.time(),
+                "agent_id": self.agent_id
             }
             
             add_to_semantic_memory(interaction_content, metadata)

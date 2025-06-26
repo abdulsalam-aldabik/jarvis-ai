@@ -1,6 +1,10 @@
 python-dotenv
 autogen
 langgraph
+langchain-core
+langchain-community
+pydantic
+networkx
 typer[all]
 requests
 google-auth
@@ -28,3 +32,4 @@ pandas
 numpy
 transformers
 hnswlib
+nest-asyncio

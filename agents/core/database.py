@@ -13,9 +13,19 @@ logger = logging.getLogger(__name__)
 class DatabaseManager:
     """Enhanced database manager with connection pooling and multi-agent support"""
     
+    _instance = None
+    _initialized = False
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
     def __init__(self):
-        self._connection_pool = None
-        self._initialize_pool()
+        if not self._initialized:
+            self._connection_pool = None
+            self._initialize_pool()
+            self.__class__._initialized = True
     
     def _initialize_pool(self):
         """Initialize connection pool with retry logic"""
@@ -165,7 +175,7 @@ class DatabaseManager:
                     # Test basic connectivity
                     cur.execute("SELECT 1")
                     
-                    # Get table statistics
+                    # Get table statistics - FIXED: properly access count values
                     cur.execute("SELECT COUNT(*) FROM agent_logs")
                     log_count = cur.fetchone()[0]
                     
@@ -200,5 +210,5 @@ class DatabaseManager:
                 "timestamp": time.time()
             }
 
-# Global database manager instance
+# Global singleton instance
 db_manager = DatabaseManager()

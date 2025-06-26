@@ -1,16 +1,20 @@
 import aiohttp
 import asyncio
-from typing import Dict, Any
 from autogen_core import MessageContext
 from agents.core.base_agent import AutoGenBaseAgent
 from config.settings import settings
 from agents.core.database import db_manager
+from typing import Dict, Any, List, Optional
 
 class ReliableWeatherAgent(AutoGenBaseAgent):
     """Reliable AutoGen weather agent (AccuWeather, no demo data)"""
 
     def __init__(self):
-        super().__init__("weather", "Reliable weather information")
+        super().__init__(
+            name="weather", 
+            description="Weather information and forecasting",
+            agent_type="weather"
+        )
 
     def log_reasoning(self, step: str, reasoning: str, data: Dict[str, Any] = None):
         try:
