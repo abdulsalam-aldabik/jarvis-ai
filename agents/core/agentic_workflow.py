@@ -320,17 +320,16 @@ class HybridAgenticWorkflow:
             
             if agent_type == "weather_agent" and "weather" in self.autogen_agents:
                 agent = self.autogen_agents["weather"]
-                # ✅ OFFICIAL: Set session context on agent
-                if hasattr(agent, '_current_session_id'):
-                    agent._current_session_id = session_id
+                if hasattr(agent, 'set_session_context'):
+                    agent.set_session_context(session_id)
                 result = await agent.process_message(user_input, context)
                 logger.info(f"Weather agent response: {result[:100]}")
                 return result
             
             elif agent_type == "routine_agent" and "routine" in self.autogen_agents:
                 agent = self.autogen_agents["routine"]
-                if hasattr(agent, '_current_session_id'):
-                    agent._current_session_id = session_id
+                if hasattr(agent, 'set_session_context'):
+                    agent.set_session_context(session_id)
                 result = await agent.process_message(user_input, context)
                 logger.info(f"Routine agent response: {result[:100]}")
                 return result
@@ -339,19 +338,21 @@ class HybridAgenticWorkflow:
                 # ✅ CRITICAL: Use orchestrator with session context
                 if "orchestrator" in self.autogen_agents:
                     agent = self.autogen_agents["orchestrator"]
-                    # ✅ OFFICIAL PATTERN: Set session context
-                    agent._current_session_id = session_id
+                    # ✅ CRITICAL: Set session context before processing
+                    agent.set_session_context(session_id)
                     result = await agent.process_message(user_input, context)
                 else:
                     from agents.core.orchestrator import orchestrator
-                    orchestrator._current_session_id = session_id
+                    # ✅ CRITICAL: Set session context
+                    orchestrator.set_session_context(session_id)
                     result = await orchestrator.process_message(user_input, context)
                 
-                logger.info(f"Orchestrator response: {result[:100]}")
+                logger.info(f"Orchestrator memory-aware response: {result[:100]}")
                 return result
                 
         except Exception as e:
             raise Exception(f"Agent execution failed for {agent_type}: {str(e)}")
+
     
     async def _finalize_and_store(self, state: HybridAgentState) -> Dict[str, Any]:
         """Finalize response and store complete interaction with session context"""
