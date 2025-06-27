@@ -1,96 +1,35 @@
 """
-Agentic state management for reasoning cycles
+Simplified agentic state for LangGraph TypedDict compatibility
 """
-from typing import Dict, List, Optional, Any
-from pydantic import BaseModel, Field
+from typing import Dict, List, Optional, Any, TypedDict, Annotated
 from datetime import datetime
 from enum import Enum
 import json
 import uuid
-
+from operator import add
 
 class ReasoningStep(str, Enum):
-    """Reasoning cycle steps"""
-    REASON = "reason"
+    """Simplified reasoning steps for LangGraph"""
+    ANALYZE = "analyze"
     PLAN = "plan" 
-    ACT = "act"
-    OBSERVE = "observe"
-    ADAPT = "adapt"
+    EXECUTE = "execute"
+    FINALIZE = "finalize"
 
-
-class AgentAction(BaseModel):
-    """Represents an action taken by an agent"""
-    action_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+class SimpleAction(TypedDict):
+    """Simplified action structure compatible with LangGraph"""
+    action_id: str
     action_type: str
-    parameters: Dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-    expected_outcome: Optional[str] = None
+    parameters: Dict[str, Any]
+    timestamp: float
 
-
-class AgentObservation(BaseModel):
-    """Represents an observation from an action"""
-    observation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+class SimpleObservation(TypedDict):
+    """Simplified observation structure compatible with LangGraph"""
+    observation_id: str
     action_id: str
     result: Any
     success: bool
-    error_message: Optional[str] = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    error_message: Optional[str]
+    timestamp: float
 
-
-class ReasoningState(BaseModel):
-    """State for agent reasoning cycle"""
-    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    agent_id: str
-    current_step: ReasoningStep = ReasoningStep.REASON
-    user_input: str = ""
-    
-    # Reasoning cycle data
-    reasoning: Optional[str] = None
-    plan: List[AgentAction] = Field(default_factory=list)
-    current_action_index: int = 0
-    observations: List[AgentObservation] = Field(default_factory=list)
-    adaptations: List[str] = Field(default_factory=list)
-    
-    # Context and memory
-    context: Dict[str, Any] = Field(default_factory=dict)
-    memory_retrieved: List[Dict[str, Any]] = Field(default_factory=list)
-    
-    # Final response
-    final_response: Optional[str] = None
-    completed: bool = False
-    
-    # Metadata
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
-    
-    def update_step(self, step: ReasoningStep):
-        """Update current reasoning step"""
-        self.current_step = step
-        self.updated_at = datetime.utcnow()
-    
-    def add_observation(self, action_id: str, result: Any, success: bool, error_message: Optional[str] = None):
-        """Add observation from action execution"""
-        observation = AgentObservation(
-            action_id=action_id,
-            result=result,
-            success=success,
-            error_message=error_message
-        )
-        self.observations.append(observation)
-        self.updated_at = datetime.utcnow()
-        return observation
-    
-    def get_current_action(self) -> Optional[AgentAction]:
-        """Get current action to execute"""
-        if self.current_action_index < len(self.plan):
-            return self.plan[self.current_action_index]
-        return None
-    
-    def advance_action(self):
-        """Move to next action in plan"""
-        self.current_action_index += 1
-        self.updated_at = datetime.utcnow()
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for storage"""
-        return json.loads(self.model_dump_json())
+# This is the MAIN state that LangGraph will use - defined in agentic_workflow.py
+# We keep this file for backward compatibility but the real state is HybridAgentState

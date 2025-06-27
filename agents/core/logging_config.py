@@ -1,21 +1,26 @@
-import logging
+"""
+Structured logging configuration for AutoGen + LangGraph hybrid system
+"""
 import json
+import logging
+import time
+from typing import Dict, Any, Optional
 
-def setup_logger():
+def log_structured(event_type: str, **kwargs):
+    """Log structured events with consistent format"""
     logger = logging.getLogger("jarvis")
     
-    # ✅ FIXED: Only add handler if none exist
-    if not logger.hasHandlers():
-        logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter('%(message)s')
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.propagate = False  # Prevent root logger duplication
+    log_entry = {
+        "event_type": event_type,
+        "timestamp": time.time(),
+        **kwargs
+    }
     
-    return logger
+    logger.info(json.dumps(log_entry, default=str))
 
-logger = setup_logger()
-
-def log_structured(event, **kwargs):
-    logger.info(json.dumps({"event": event, **kwargs}))
+def setup_logging():
+    """Setup logging configuration"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
