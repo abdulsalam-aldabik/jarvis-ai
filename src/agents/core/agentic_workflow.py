@@ -5,8 +5,8 @@ from typing import Dict, Any, List, Optional, TypedDict, Annotated
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
-from agents.core.database import db_manager
-from agents.core.logging_config import log_structured
+from src.agents.core.database import db_manager
+from src.agents.core.logging_config import log_structured
 from autogen_core import MessageContext, TopicId, CancellationToken
 import time
 import uuid
@@ -114,7 +114,7 @@ class HybridAgenticWorkflow:
             
             # DYNAMIC: Search memory using LLM analysis
             try:
-                from learning.behavior.behavior_engine import search_semantic_memory
+                from ...learning.behavior.behavior_engine import search_semantic_memory
                 memory_results = search_semantic_memory(
                     state["user_input"], 
                     n_results=5, 
@@ -261,7 +261,7 @@ Keep it concise and focus on the reasoning process."""
             
             # DYNAMIC: Use LLM to analyze input and select best agent
             try:
-                from learning.behavior.behavior_engine import analyze_query_with_llm
+                from ...learning.behavior.behavior_engine import analyze_query_with_llm
                 input_analysis = await analyze_query_with_llm(user_input)
                 
                 # DYNAMIC: Let LLM decide based on analysis and capabilities
@@ -396,7 +396,7 @@ Respond with only the agent ID (e.g., 'weather', 'routine', 'orchestrator')."""
             
             if user_input and session_id:
                 try:
-                    from learning.behavior.behavior_engine import add_to_semantic_memory
+                    from ...learning.behavior.behavior_engine import add_to_semantic_memory
                     
                     interaction_content = f"User: {user_input}"
                     metadata = {
@@ -441,7 +441,7 @@ Respond with only the agent ID (e.g., 'weather', 'routine', 'orchestrator')."""
                     return result
                 else:
                     # Last resort: Import orchestrator directly
-                    from agents.core.orchestrator import orchestrator
+                    from src.agents.core.orchestrator import orchestrator
                     if hasattr(orchestrator, 'set_session_context'):
                         orchestrator.set_session_context(session_id)
                     result = await orchestrator.process_message(user_input, context)
@@ -483,7 +483,7 @@ Respond with only the agent ID (e.g., 'weather', 'routine', 'orchestrator')."""
             session_id = state.get("session_id")
             if session_id:
                 try:
-                    from learning.behavior.behavior_engine import add_to_semantic_memory
+                    from ...learning.behavior.behavior_engine import add_to_semantic_memory
                     interaction_content = f"User: {state['user_input']}\nJarvis: {final_response}"
                     metadata = {
                         "type": "conversation",

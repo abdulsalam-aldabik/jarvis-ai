@@ -12,15 +12,15 @@ import typer
 from fastapi import FastAPI, HTTPException
 from prometheus_client import start_http_server, Counter
 from autogen_core import MessageContext
-from agents.core.orchestrator import orchestrator
-from agents.specialized.weather_agent import ReliableWeatherAgent
-from agents.specialized.routine_agent import ReliableRoutineAgent
-from agents.core.database import db_manager
+from src.agents.core.orchestrator import orchestrator
+from src.agents.specialized.weather_agent import ReliableWeatherAgent
+from src.agents.specialized.routine_agent import ReliableRoutineAgent
+from src.agents.core.database import db_manager
 from config.settings import settings
-from agents.core.a2a_protocol import a2a_registry
-from agents.core.base_agent import agent_registry, AutoGenBaseAgent
-from agents.core.logging_config import log_structured
-from agents.core.agentic_workflow import HybridAgenticWorkflow
+from src.agents.core.a2a_protocol import a2a_registry
+from src.agents.core.base_agent import agent_registry, AutoGenBaseAgent
+from src.agents.core.logging_config import log_structured
+from src.agents.core.agentic_workflow import HybridAgenticWorkflow
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 logger = logging.getLogger("jarvis")

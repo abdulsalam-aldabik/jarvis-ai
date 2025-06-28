@@ -6,8 +6,8 @@ import logging
 import time
 from typing import Dict, Any, List, Optional
 from autogen_core import RoutedAgent, message_handler, MessageContext
-from agents.core.base_agent import AutoGenBaseAgent
-from agents.core.database import db_manager
+from src.agents.core.base_agent import AutoGenBaseAgent
+from src.agents.core.database import db_manager
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ class ReliableOrchestrator(AutoGenBaseAgent):
             logger.info(f"Searching memory for '{message}' with session '{session_id}'")
             
             try:
-                from learning.behavior.behavior_engine import search_semantic_memory
+                from ..learning.behavior.behavior_engine import search_semantic_memory
                 results = search_semantic_memory(message, n_results=5, session_id=session_id)
             except ImportError:
                 logger.warning("Memory system not available")

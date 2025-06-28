@@ -5,9 +5,9 @@ import asyncio
 import time
 from typing import Dict, Any, List, Optional
 from autogen_core import MessageContext
-from agents.core.base_agent import AutoGenBaseAgent
-from agents.core.database import db_manager
-from agents.core.logging_config import log_structured
+from src.agents.core.base_agent import AutoGenBaseAgent
+from src.agents.core.database import db_manager
+from src.agents.core.logging_config import log_structured
 from config.settings import settings
 
 class ReliableRoutineAgent(AutoGenBaseAgent):

@@ -4,7 +4,7 @@ A2A (Agent-to-Agent) Protocol implementation for AutoGen agents
 import time
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, asdict
-from agents.core.logging_config import log_structured
+from src.agents.core.logging_config import log_structured
 
 @dataclass
 class A2ASkill:

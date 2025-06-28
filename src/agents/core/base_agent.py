@@ -8,9 +8,9 @@ from typing import Dict, Any, List, Optional
 from autogen_core import RoutedAgent, MessageContext, message_handler
 from dataclasses import dataclass
 from config.settings import settings
-from agents.core.database import db_manager
+from src.agents.core.database import db_manager
 from datetime import datetime
-from agents.core.logging_config import log_structured
+from src.agents.core.logging_config import log_structured
 
 @dataclass
 class AgentTask:
@@ -50,7 +50,7 @@ class AutoGenBaseAgent(RoutedAgent):
         """Process user input using enhanced reasoning"""
         try:
             # Use orchestrator for complex processing
-            from agents.core.orchestrator import orchestrator
+            from src.agents.core.orchestrator import orchestrator
             
             # Set session context if available
             if self.current_session_id and hasattr(orchestrator, 'set_session_context'):
@@ -89,7 +89,7 @@ class AutoGenBaseAgent(RoutedAgent):
     def _register_a2a_card(self):
         """Register this agent's A2A card"""
         try:
-            from agents.core.a2a_protocol import a2a_registry, A2AAgentCard, A2ASkill
+            from src.agents.core.a2a_protocol import a2a_registry, A2AAgentCard, A2ASkill
             
             card = A2AAgentCard(
                 agent_id=self.agent_id,
@@ -127,7 +127,7 @@ class AutoGenBaseAgent(RoutedAgent):
     def _get_a2a_skills(self) -> List:
         """Get A2A skills for this agent"""
         try:
-            from agents.core.a2a_protocol import A2ASkill
+            from src.agents.core.a2a_protocol import A2ASkill
             
             default_skills = {
                 "weather": [A2ASkill(
