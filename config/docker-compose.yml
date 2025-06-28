@@ -1,0 +1,169 @@
+name: jarvis
+services:
+  # Your custom tbxark/mcp-proxy on port 9190
+  mcp-proxy:
+    build:
+      context: ..
+      dockerfile: docker/mcp-proxy.Dockerfile
+    container_name: jarvis-mcp-proxy
+    ports:
+      - "9190:9190"
+    volumes:
+      - ../config/mcp-config.json:/config/config.json:ro
+      - ../api:/app/api:ro
+    restart: unless-stopped
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:9190/health"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    networks:
+      - default
+      - jarvis-network
+    depends_on:
+      weather-mcp:
+          condition: service_healthy 
+
+
+
+  # PostgreSQL with pgvector (your existing setup)
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: jarvis-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jarvisdb}
+      POSTGRES_USER: ${POSTGRES_USER:-jarvis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../infra/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jarvis} -d ${POSTGRES_DB:-jarvisdb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - default
+      - jarvis-network
+
+  # ChromaDB for your behavior learning system
+  chroma:
+    image: chromadb/chroma:latest
+    container_name: jarvis-chroma
+    ports:
+      - "8000:8000"
+    volumes:
+      - ${CHROMA_PERSIST_DIRECTORY:-../data/chroma}:/chroma/chroma
+    environment:
+      - ANONYMIZED_TELEMETRY=FALSE
+      - CHROMA_DB_IMPL=duckdb+parquet
+    restart: unless-stopped
+    networks:
+      - default
+      - jarvis-network
+
+  # Main Jarvis agent system (your existing setup enhanced)
+  jarvis-agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: jarvis-agent
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+      - POSTGRES_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - OLLAMA_URL=http://192.168.0.116:11434  # Ensure this matches your setup
+      - ACCUWEATHER_API_KEY=${ACCUWEATHER_API_KEY}  # Add this line
+      - CHROMA_URL=http://chroma:8000                # Add this line
+      - mcp_proxy_url=http://mcp-proxy:9190  # Add this line
+    ports:
+      - "8005:8005"  # API endpoint
+      - "8001:8001"  # Metrics
+    volumes:
+      - ../data:/app/data
+      - ../config:/app/config:ro
+      - ${HOME}/projects:/workspace:ro  # For filesystem MCP tools
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chroma:
+        condition: service_started
+      # mcp-proxy:
+      #   condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - default
+      - jarvis-network
+
+  # Prometheus for metrics (your existing setup)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: jarvis-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    restart: unless-stopped
+    networks:
+      - default
+      - jarvis-network
+
+  # Grafana for dashboards (your existing setup)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: jarvis-grafana
+    ports:
+      - "3001:3001"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+        environment:
+        GF_SECURITY_ADMIN_USER: admin
+        GF_SECURITY_ADMIN_PASSWORD: admin
+        GF_USERS_ALLOW_SIGN_UP: "false"
+        GF_SERVER_HTTP_PORT: 3001
+    restart: unless-stopped
+    networks:
+      - default
+      - jarvis-network
+
+  # weather mcp server
+  weather-mcp:
+    build:
+      context: ..
+      dockerfile: ./tools/mcp_servers/weather.Dockerfile
+    container_name: jarvis-weather-mcp
+    ports:
+      - "8182:8182"  # Adjust port based on your weather server
+    restart: unless-stopped
+    networks:
+      - default
+      - jarvis-network
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8182/health"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 20s  # Give it time to start
+
+
+volumes:
+  postgres_data:
+    driver: local
+  grafana_data:
+    driver: local
+  prometheus_data:
+    driver: local
+
+networks:
+  jarvis-network:
+    driver: bridge

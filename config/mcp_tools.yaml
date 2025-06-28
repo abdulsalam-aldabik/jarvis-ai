@@ -1,0 +1,187 @@
+# Dynamic MCP tool configuration for tbxark/mcp-proxy
+# Integrates with your existing AutoGen + LangGraph + Behavior Learning system
+
+mcp_proxy:
+  server:
+    name: "Jarvis MCP Proxy"
+    version: "1.0.0"
+    host: "0.0.0.0"
+    port: 9190
+    base_url: "http://mcp-proxy:9190"
+    
+  # Dynamic MCP client configurations
+  clients:
+    weather:
+      name: "OpenMeteo Weather"
+      transport: "stdio"
+      command: "uvx"
+      args: ["mcp-server-openmeteo"]
+      env:
+        PYTHONPATH: "/usr/local/lib/python3.12/site-packages"
+      capabilities:
+        - name: "get_current_weather"
+          description: "Get current weather conditions for a location"
+          parameters:
+            type: "object"
+            properties:
+              location:
+                type: "string"
+                description: "Location name (city, country)"
+              units:
+                type: "string"
+                enum: ["metric", "imperial"]
+                default: "metric"
+          
+        - name: "get_weather_forecast"
+          description: "Get weather forecast for multiple days"
+          parameters:
+            type: "object"
+            properties:
+              location:
+                type: "string"
+                description: "Location name"
+              days:
+                type: "integer"
+                minimum: 1
+                maximum: 14
+                default: 7
+
+    filesystem:
+      name: "Filesystem Operations"
+      transport: "stdio"
+      command: "uvx"
+      args: ["mcp-server-filesystem", "--base-path", "/workspace/data"]
+      capabilities:
+        - name: "read_file"
+          description: "Read file contents"
+          parameters:
+            type: "object"
+            properties:
+              path:
+                type: "string"
+                description: "File path relative to workspace"
+        
+        - name: "write_file"
+          description: "Write content to file"
+          parameters:
+            type: "object"
+            properties:
+              path:
+                type: "string"
+                description: "File path to write"
+              content:
+                type: "string"
+                description: "Content to write to file"
+        
+        - name: "list_directory"
+          description: "List directory contents"
+          parameters:
+            type: "object"
+            properties:
+              path:
+                type: "string"
+                description: "Directory path to list"
+                default: "."
+
+    fetch:
+      name: "HTTP Fetch"
+      transport: "stdio" 
+      command: "uvx"
+      args: ["mcp-server-fetch"]
+      capabilities:
+        - name: "fetch_url"
+          description: "Fetch content from URL"
+          parameters:
+            type: "object"
+            properties:
+              url:
+                type: "string"
+                format: "uri"
+                description: "URL to fetch"
+              method:
+                type: "string"
+                enum: ["GET", "POST", "PUT", "DELETE"]
+                default: "GET"
+              headers:
+                type: "object"
+                description: "Optional HTTP headers"
+
+# Agent tool assignments and A2A capabilities (compatible with your existing agents)
+agent_tools:
+  weather:
+    class_name: "ReliableWeatherAgent"
+    specialization: "Weather information and environmental data"
+    mcp_clients: ["weather", "fetch"]
+    a2a_capabilities:
+      - name: "weather_query"
+        description: "Get weather information for locations"
+        input_schema:
+          location: "string"
+          forecast_days: "integer"
+      - name: "weather_alerts"
+        description: "Weather alerts and warnings"
+        input_schema:
+          location: "string"
+    session_memory: true
+    behavior_learning: true
+    
+  routine:
+    class_name: "ReliableRoutineAgent"
+    specialization: "Routine planning and habit management"
+    mcp_clients: ["filesystem"]
+    a2a_capabilities:
+      - name: "routine_creation"
+        description: "Create and manage user routines"
+        input_schema:
+          routine_type: "string"
+          activities: "array"
+      - name: "habit_tracking"
+        description: "Track routine execution and habits"
+        input_schema:
+          routine_id: "string"
+          completion_status: "boolean"
+    session_memory: true
+    behavior_learning: true
+    
+  orchestrator:
+    class_name: "OrchestatorAgent"
+    specialization: "Multi-agent coordination and task delegation"
+    mcp_clients: ["fetch", "filesystem"]
+    a2a_capabilities:
+      - name: "agent_coordination"
+        description: "Coordinate multiple agents for complex tasks"
+        input_schema:
+          task_description: "string"
+          required_agents: "array"
+      - name: "task_delegation"
+        description: "Delegate tasks to specialized agents"
+        input_schema:
+          task: "string"
+          target_agent: "string"
+    session_memory: true
+    context_sharing: true
+    behavior_learning: true
+
+# Integration with your existing behavior learning system
+behavior_integration:
+  enabled: true
+  chroma_collection: "jarvis_memory"
+  semantic_analysis: true
+  llm_analysis: true
+  pattern_learning: true
+  dynamic_categorization: true
+
+# MCP proxy configuration for tbxark/mcp-proxy
+proxy_config:
+  log_level: "info"
+  cors_enabled: true
+  rate_limiting:
+    enabled: true
+    requests_per_minute: 100
+  health_check:
+    enabled: true
+    interval: 30
+    endpoint: "/health"
+  discovery:
+    enabled: true
+    endpoint: "/.well-known/mcp.json"
