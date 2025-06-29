@@ -1,25 +1,23 @@
-# Dynamic MCP tool configuration for tbxark/mcp-proxy
-# Integrates with your existing AutoGen + LangGraph + Behavior Learning system
+# config/mcp_tools.yaml - CORRECTED for your existing setup
+# Integrates with your working tbxark/mcp-proxy + weather-mcp + Docker setup
 
 mcp_proxy:
   server:
     name: "Jarvis MCP Proxy"
     version: "1.0.0"
-    host: "0.0.0.0"
+    host: "mcp-proxy"
     port: 9190
     base_url: "http://mcp-proxy:9190"
     
-  # Dynamic MCP client configurations
+  # Your existing working MCP clients (matches mcp-config.json)
   clients:
     weather:
-      name: "OpenMeteo Weather"
-      transport: "stdio"
-      command: "uvx"
-      args: ["mcp-server-openmeteo"]
-      env:
-        PYTHONPATH: "/usr/local/lib/python3.12/site-packages"
+      name: "Jarvis Weather Server"
+      transport: "sse"  # Matches your working setup
+      url: "http://weather-mcp:8182/sse/"  # Your existing container
+      enabled: true  # Enable since this is working
       capabilities:
-        - name: "get_current_weather"
+        - name: "get_weather"
           description: "Get current weather conditions for a location"
           parameters:
             type: "object"
@@ -27,12 +25,10 @@ mcp_proxy:
               location:
                 type: "string"
                 description: "Location name (city, country)"
-              units:
-                type: "string"
-                enum: ["metric", "imperial"]
-                default: "metric"
+                default: "Brussels"
+            required: ["location"]
           
-        - name: "get_weather_forecast"
+        - name: "get_forecast"
           description: "Get weather forecast for multiple days"
           parameters:
             type: "object"
@@ -40,17 +36,20 @@ mcp_proxy:
               location:
                 type: "string"
                 description: "Location name"
+                default: "Brussels"
               days:
                 type: "integer"
                 minimum: 1
-                maximum: 14
-                default: 7
+                maximum: 7
+                default: 3
+            required: ["location"]
 
+    # Add these when you create them later
     filesystem:
       name: "Filesystem Operations"
-      transport: "stdio"
-      command: "uvx"
-      args: ["mcp-server-filesystem", "--base-path", "/workspace/data"]
+      transport: "sse"
+      url: "http://filesystem-mcp:8183/sse/"  # Future container
+      enabled: false  # Disable until implemented
       capabilities:
         - name: "read_file"
           description: "Read file contents"
@@ -60,34 +59,13 @@ mcp_proxy:
               path:
                 type: "string"
                 description: "File path relative to workspace"
-        
-        - name: "write_file"
-          description: "Write content to file"
-          parameters:
-            type: "object"
-            properties:
-              path:
-                type: "string"
-                description: "File path to write"
-              content:
-                type: "string"
-                description: "Content to write to file"
-        
-        - name: "list_directory"
-          description: "List directory contents"
-          parameters:
-            type: "object"
-            properties:
-              path:
-                type: "string"
-                description: "Directory path to list"
-                default: "."
+            required: ["path"]
 
     fetch:
       name: "HTTP Fetch"
-      transport: "stdio" 
-      command: "uvx"
-      args: ["mcp-server-fetch"]
+      transport: "sse"
+      url: "http://fetch-mcp:8184/sse/"  # Future container
+      enabled: false  # Disable until implemented
       capabilities:
         - name: "fetch_url"
           description: "Fetch content from URL"
@@ -98,28 +76,22 @@ mcp_proxy:
                 type: "string"
                 format: "uri"
                 description: "URL to fetch"
-              method:
-                type: "string"
-                enum: ["GET", "POST", "PUT", "DELETE"]
-                default: "GET"
-              headers:
-                type: "object"
-                description: "Optional HTTP headers"
+            required: ["url"]
 
-# Agent tool assignments and A2A capabilities (compatible with your existing agents)
+# Agent tool assignments (compatible with your existing ReliableWeatherAgent)
 agent_tools:
   weather:
     class_name: "ReliableWeatherAgent"
-    specialization: "Weather information and environmental data"
-    mcp_clients: ["weather", "fetch"]
+    specialization: "Weather information and environmental data specialist"
+    mcp_clients: ["weather"]  # Only use working weather client
     a2a_capabilities:
       - name: "weather_query"
         description: "Get weather information for locations"
         input_schema:
           location: "string"
           forecast_days: "integer"
-      - name: "weather_alerts"
-        description: "Weather alerts and warnings"
+      - name: "current_conditions"
+        description: "Get current weather conditions"
         input_schema:
           location: "string"
     session_memory: true
@@ -128,7 +100,7 @@ agent_tools:
   routine:
     class_name: "ReliableRoutineAgent"
     specialization: "Routine planning and habit management"
-    mcp_clients: ["filesystem"]
+    mcp_clients: []  # No MCP clients until filesystem is implemented
     a2a_capabilities:
       - name: "routine_creation"
         description: "Create and manage user routines"
@@ -146,7 +118,7 @@ agent_tools:
   orchestrator:
     class_name: "OrchestatorAgent"
     specialization: "Multi-agent coordination and task delegation"
-    mcp_clients: ["fetch", "filesystem"]
+    mcp_clients: []  # No MCP clients until other services are implemented
     a2a_capabilities:
       - name: "agent_coordination"
         description: "Coordinate multiple agents for complex tasks"
@@ -162,22 +134,22 @@ agent_tools:
     context_sharing: true
     behavior_learning: true
 
-# Integration with your existing behavior learning system
+# Integration with your existing ChromaDB behavior learning system
 behavior_integration:
   enabled: true
-  chroma_collection: "jarvis_memory"
+  chroma_collection: "jarvis_behavior_memory"  # Matches your collection name
+  chroma_url: "http://chroma:8000"  # Your existing ChromaDB container
   semantic_analysis: true
   llm_analysis: true
   pattern_learning: true
   dynamic_categorization: true
+  session_persistence: true
 
-# MCP proxy configuration for tbxark/mcp-proxy
+# Proxy configuration compatible with tbxark/mcp-proxy
 proxy_config:
   log_level: "info"
-  cors_enabled: true
-  rate_limiting:
-    enabled: true
-    requests_per_minute: 100
+  sse_enabled: true  # Your transport method
+  http_enabled: true
   health_check:
     enabled: true
     interval: 30
@@ -185,3 +157,12 @@ proxy_config:
   discovery:
     enabled: true
     endpoint: "/.well-known/mcp.json"
+
+# Docker integration (matches your docker-compose.yml)
+docker_integration:
+  network: "jarvis-network"
+  containers:
+    mcp_proxy: "jarvis-mcp-proxy"
+    weather_mcp: "jarvis-weather-mcp" 
+    chroma: "jarvis-chroma"
+    postgres: "jarvis-postgres"

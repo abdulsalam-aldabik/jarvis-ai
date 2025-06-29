@@ -148,6 +148,8 @@ services:
     networks:
       - default
       - jarvis-network
+    environment:
+      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}  # Add this
     # healthcheck:
     #   test: ["CMD", "curl", "-f", "http://localhost:8182/health"]
     #   interval: 30s
