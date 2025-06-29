@@ -142,7 +142,7 @@ class DatabaseManager:
             return False
 
     def update_agent_heartbeat(self, agent_id: str) -> bool:
-        """Update agent heartbeat timestamp"""
+        """Update agent heartbeat timestamp with proper row count handling"""
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
@@ -150,11 +150,25 @@ class DatabaseManager:
                         "UPDATE agent_registry SET last_heartbeat = CURRENT_TIMESTAMP WHERE agent_id = %s",
                         (agent_id,)
                     )
+                    rows_affected = cur.rowcount  # Add this line
                     conn.commit()
+                    
+                    if rows_affected == 0:
+                        # Agent not in registry, auto-register it
+                        logger.info(f"Auto-registering agent {agent_id}")
+                        return self.register_agent(
+                            agent_id=agent_id,
+                            agent_type="auto_registered",
+                            capabilities={"auto_registered": True},
+                            description=f"Auto-registered agent: {agent_id}"
+                        )
+                    
                     return True
         except Exception as e:
             logger.error(f"Failed to update agent heartbeat: {e}")
             return False
+
+
 
     def get_active_agents(self) -> List[Dict]:
         """Get list of active agents"""
@@ -168,6 +182,20 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Failed to get active agents: {e}")
             return []
+
+
+    def _auto_register_agent(self, agent_id: str) -> bool:
+        """Auto-register agent if not in registry"""
+        try:
+            return self.register_agent(
+                agent_id=agent_id,
+                agent_type="auto_registered",
+                capabilities={"auto_registered": True},
+                description=f"Auto-registered agent: {agent_id}"
+            )
+        except Exception as e:
+            logger.warning(f"Auto-registration failed for {agent_id}: {e}")
+            return False
 
     def health_check(self) -> Dict[str, Any]:
         """Comprehensive database health check"""

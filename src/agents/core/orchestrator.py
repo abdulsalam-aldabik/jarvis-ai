@@ -53,7 +53,7 @@ class ReliableOrchestrator(AutoGenBaseAgent):
             logger.info(f"Searching memory for '{message}' with session '{session_id}'")
             
             try:
-                from ..learning.behavior.behavior_engine import search_semantic_memory
+                from src.learning.behavior.behavior_engine import search_semantic_memory
                 results = search_semantic_memory(message, n_results=5, session_id=session_id)
             except ImportError:
                 logger.warning("Memory system not available")
