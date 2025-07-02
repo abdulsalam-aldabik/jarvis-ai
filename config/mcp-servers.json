@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "general": {
+      "enabled": true,
+      "timeout": 60,
+      "command": "python",
+      "args": [
+        "/app/tools/mcp_servers/general_server.py"
+      ],
+      "transportType": "stdio"
+    }
+  }
+}

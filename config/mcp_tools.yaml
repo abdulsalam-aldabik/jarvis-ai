@@ -1,5 +1,4 @@
-# config/mcp_tools.yaml - CORRECTED for your existing setup
-# Integrates with your working tbxark/mcp-proxy + weather-mcp + Docker setup
+# config/mcp_tools.yaml - CORRECTED & COMPLETE
 
 mcp_proxy:
   server:
@@ -9,13 +8,13 @@ mcp_proxy:
     port: 9190
     base_url: "http://mcp-proxy:9190"
     
-  # Your existing working MCP clients (matches mcp-config.json)
   clients:
     weather:
       name: "Jarvis Weather Server"
-      transport: "sse"  # Matches your working setup
-      url: "http://weather-mcp:8182/sse/"  # Your existing container
-      enabled: true  # Enable since this is working
+      transport: "sse"
+      url: "http://mcp-proxy:9190/servers/weather"
+      enabled: false
+      session_required: true  # ADDED: indicates session management needed
       capabilities:
         - name: "get_weather"
           description: "Get current weather conditions for a location"
@@ -26,8 +25,9 @@ mcp_proxy:
                 type: "string"
                 description: "Location name (city, country)"
                 default: "Brussels"
-            required: ["location"]
-          
+            required: []
+        
+        # FIXED: Added missing forecast capability
         - name: "get_forecast"
           description: "Get weather forecast for multiple days"
           parameters:
@@ -39,17 +39,58 @@ mcp_proxy:
                 default: "Brussels"
               days:
                 type: "integer"
+                description: "Number of forecast days (1-7)"
+                default: 3
                 minimum: 1
                 maximum: 7
-                default: 3
-            required: ["location"]
+            required: []
 
-    # Add these when you create them later
+    general:
+      name: "General System Tools"
+      transport: "http"
+      url: "http://mcp-proxy:9190/servers/general"
+      enabled: true
+      session_required: true  # ADDED: indicates session management needed
+      capabilities:
+        - name: "get_system_info"
+          description: "Get system information and status"
+          parameters:
+            type: "object"
+            properties: {}
+            required: []
+          
+        - name: "execute_command"
+          description: "Execute safe shell commands"
+          parameters:
+            type: "object"
+            properties:
+              command:
+                type: "string"
+                description: "Shell command to execute (whitelist: ls, pwd, date, whoami, uptime, df, free, ps)"
+            required: ["command"]
+
+
+        
+        # FIXED: Added missing create_file capability
+        - name: "create_file"
+          description: "Create a text file with specified content"
+          parameters:
+            type: "object"
+            properties:
+              filename:
+                type: "string"
+                description: "Name of file to create"
+              content:
+                type: "string"
+                description: "Content to write to file"
+            required: ["filename", "content"]
+
+    # Future capabilities (disabled for now)
     filesystem:
       name: "Filesystem Operations"
       transport: "sse"
-      url: "http://filesystem-mcp:8183/sse/"  # Future container
-      enabled: false  # Disable until implemented
+      url: "http://filesystem-mcp:8183/sse/"
+      enabled: false
       capabilities:
         - name: "read_file"
           description: "Read file contents"
@@ -64,8 +105,8 @@ mcp_proxy:
     fetch:
       name: "HTTP Fetch"
       transport: "sse"
-      url: "http://fetch-mcp:8184/sse/"  # Future container
-      enabled: false  # Disable until implemented
+      url: "http://fetch-mcp:8184/sse/"
+      enabled: false
       capabilities:
         - name: "fetch_url"
           description: "Fetch content from URL"
@@ -78,29 +119,39 @@ mcp_proxy:
                 description: "URL to fetch"
             required: ["url"]
 
-# Agent tool assignments (compatible with your existing ReliableWeatherAgent)
+# Agent tool assignments
 agent_tools:
   weather:
     class_name: "ReliableWeatherAgent"
     specialization: "Weather information and environmental data specialist"
-    mcp_clients: ["weather"]  # Only use working weather client
+    # mcp_clients: ["weather"]
+    mcp_clients: []  # NO MCP CLIENTS - Direct API only
+    api_integration:
+      openweather_api: true
+      direct_calls: true
+      mcp_bypass: true
     a2a_capabilities:
       - name: "weather_query"
         description: "Get weather information for locations"
         input_schema:
           location: "string"
-          forecast_days: "integer"
       - name: "current_conditions"
         description: "Get current weather conditions"
         input_schema:
           location: "string"
+      # ENHANCED: Added forecast capability
+      - name: "weather_forecast"
+        description: "Get weather forecast for multiple days"
+        input_schema:
+          location: "string"
+          days: "integer"
     session_memory: true
     behavior_learning: true
     
   routine:
     class_name: "ReliableRoutineAgent"
     specialization: "Routine planning and habit management"
-    mcp_clients: []  # No MCP clients until filesystem is implemented
+    mcp_clients: ["general"]
     a2a_capabilities:
       - name: "routine_creation"
         description: "Create and manage user routines"
@@ -116,9 +167,10 @@ agent_tools:
     behavior_learning: true
     
   orchestrator:
-    class_name: "OrchestatorAgent"
+    # FIXED: Correct spelling
+    class_name: "OrchestratorAgent"
     specialization: "Multi-agent coordination and task delegation"
-    mcp_clients: []  # No MCP clients until other services are implemented
+    mcp_clients: ["general"]
     a2a_capabilities:
       - name: "agent_coordination"
         description: "Coordinate multiple agents for complex tasks"
@@ -130,6 +182,10 @@ agent_tools:
         input_schema:
           task: "string"
           target_agent: "string"
+      - name: "system_monitoring"
+        description: "Monitor system status and health"
+        input_schema:
+          check_type: "string"
     session_memory: true
     context_sharing: true
     behavior_learning: true
@@ -137,32 +193,46 @@ agent_tools:
 # Integration with your existing ChromaDB behavior learning system
 behavior_integration:
   enabled: true
-  chroma_collection: "jarvis_behavior_memory"  # Matches your collection name
-  chroma_url: "http://chroma:8000"  # Your existing ChromaDB container
+  chroma_collection: "jarvis_behavior_memory"
+  chroma_url: "http://chroma:8000"
   semantic_analysis: true
   llm_analysis: true
   pattern_learning: true
   dynamic_categorization: true
   session_persistence: true
 
-# Proxy configuration compatible with tbxark/mcp-proxy
+# Proxy configuration
 proxy_config:
   log_level: "info"
-  sse_enabled: true  # Your transport method
   http_enabled: true
   health_check:
     enabled: true
     interval: 30
-    endpoint: "/health"
+    endpoint: "/status"
   discovery:
     enabled: true
     endpoint: "/.well-known/mcp.json"
 
-# Docker integration (matches your docker-compose.yml)
+# ADDED: Proxy-specific configuration
+proxy_transport_config:
+  weather:
+    type: "stdio_via_sse"  # stdio server accessed via SSE
+    sse_endpoint: "/servers/weather/sse"
+    messages_endpoint: "/servers/weather/messages"
+    session_management: "auto"  # auto-manage sessions
+    
+  general:
+    type: "stdio_via_sse"  # stdio server accessed via SSE  
+    sse_endpoint: "/servers/general/sse"
+    messages_endpoint: "/servers/general/messages"
+    session_management: "auto"  # auto-manage sessions
+
+# Docker integration
 docker_integration:
   network: "jarvis-network"
   containers:
     mcp_proxy: "jarvis-mcp-proxy"
-    weather_mcp: "jarvis-weather-mcp" 
+    # weather_mcp: "jarvis-weather-mcp"
+    general_mcp: "jarvis-general-mcp"
     chroma: "jarvis-chroma"
     postgres: "jarvis-postgres"

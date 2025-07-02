@@ -1,0 +1,6 @@
+requests>=2.31.0
+python-dotenv>=1.0.0
+mcp>=1.0.0
+jsonschema
+# This is the key dependency causing the issue
+rpds-py>=0.18.0

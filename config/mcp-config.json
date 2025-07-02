@@ -1,23 +1,50 @@
 {
-  "mcpProxy": {
-    "baseURL": "http://localhost:9190",
-    "addr": ":9190",
+  "server": {
+    "host": "0.0.0.0",
+    "port": 9190,
     "name": "Jarvis MCP Proxy",
-    "version": "1.0.0",
-    "options": {
-      "panicIfInvalid": false,
-      "logEnabled": true,
-      "authTokens": [],
-      "enableHTTP": true,
-      "enableSSE": true,
-      "enableREST": true
+    "version": "1.0.0"
+  },
+  "logging": {
+    "level": "info",
+    "format": "json"
+  },
+  "proxy": {
+    "timeout": 30000,
+    "retries": 3,
+    "enableCors": true,
+    "enableHealthCheck": true
+  },
+  "servers": {
+    "weather": {
+      "name": "Weather Server",
+      "transport": "http",
+      "baseUrl": "http://weather-mcp:8182",
+      "endpoints": {
+        "tools": "/tools/call",
+        "list": "/tools/list",
+        "health": "/health"
+      },
+      "timeout": 15000,
+      "enabled": true
+    },
+    "general": {
+      "name": "General Tools Server", 
+      "transport": "http",
+      "baseUrl": "http://general-mcp:8183",
+      "endpoints": {
+        "tools": "/tools/call",
+        "list": "/tools/list",
+        "health": "/health"
+      },
+      "timeout": 15000,
+      "enabled": true
     }
   },
-  "mcpServers": {
-    "weather": {
-      "transport": "sse",
-      "url": "http://weather-mcp:8182/sse/"
-    }
-
+  "routes": {
+    "/weather": "weather",
+    "/general": "general",
+    "/health": "proxy_health",
+    "/servers": "list_servers"
   }
 }

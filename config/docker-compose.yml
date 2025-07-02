@@ -1,28 +1,35 @@
 name: jarvis
 services:
-  # Your custom tbxark/mcp-proxy on port 9190
+  # Your custom sparfenyuk/mcp-proxy on port 9190
   mcp-proxy:
     build:
-      context: ..
-      dockerfile: docker/mcp-proxy.Dockerfile
+      context: ..                                    # Build context (parent directory)
+      dockerfile: ./docker/mcp-proxy.Dockerfile     # Path to your Dockerfile
     container_name: jarvis-mcp-proxy
     ports:
       - "9190:9190"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
     volumes:
-      - ../config/mcp-config.json:/config/config.json:ro
-      - ../api:/app/api:ro
+      - ./mcp-servers.json:/app/servers.json:ro
+      - ../tools/mcp_servers:/app/tools/mcp_servers:ro
+    command: >
+      --pass-environment
+      --port 9190
+      --host 0.0.0.0
+      --named-server-config /app/servers.json
+      --allow-origin "*"
+      --debug
     restart: unless-stopped
-    # healthcheck:
-    #   test: ["CMD", "curl", "-f", "http://localhost:9190/health"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
     networks:
-      - default
       - jarvis-network
-    depends_on:
-      weather-mcp:
-          condition: service_healthy 
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9190/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
 
 
@@ -79,6 +86,8 @@ services:
       - ACCUWEATHER_API_KEY=${ACCUWEATHER_API_KEY}  # Add this line
       - CHROMA_URL=http://chroma:8000                # Add this line
       - mcp_proxy_url=http://mcp-proxy:9190  # Add this line
+      - HF_HOME=/data/.huggingface
+      - SENTENCE_TRANSFORMERS_HOME=/data/sentence_transformers
     ports:
       - "8005:8005"  # API endpoint
       - "8001:8001"  # Metrics
@@ -86,6 +95,9 @@ services:
       - ../data:/app/data
       - ../config:/app/config:ro
       - ${HOME}/projects:/workspace:ro  # For filesystem MCP tools
+      - ../data/hf_cache:/data/.huggingface
+      - ../data/sentence_transformers:/data/sentence_transformers
+      - ../data/jarvis_cache:/home/jarvis/.cache
     depends_on:
       postgres:
         condition: service_healthy
@@ -136,26 +148,6 @@ services:
       - default
       - jarvis-network
 
-  # weather mcp server
-  weather-mcp:
-    build:
-      context: ..
-      dockerfile: ./tools/mcp_servers/weather.Dockerfile
-    container_name: jarvis-weather-mcp
-    ports:
-      - "8182:8182"  # Adjust port based on your weather server
-    restart: unless-stopped
-    networks:
-      - default
-      - jarvis-network
-    environment:
-      - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}  # Add this
-    # healthcheck:
-    #   test: ["CMD", "curl", "-f", "http://localhost:8182/health"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
-    #   start_period: 20s  # Give it time to start
 
 
 volumes:

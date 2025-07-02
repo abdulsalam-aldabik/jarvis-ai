@@ -37,7 +37,7 @@ class LLMConfig:
 class APIConfig:
     """External API configuration"""
     accuweather_key: str = os.getenv("ACCUWEATHER_API_KEY", "")
-    mcp_proxy_url: str = os.getenv("MCP_PROXY_URL", "http://mcp-proxy:8180")
+    mcp_proxy_url: str = os.getenv("MCP_PROXY_URL", "http://mcp-proxy:9190")
     
     def validate(self) -> List[str]:
         issues = []
