@@ -1,145 +1,159 @@
-import os
+#!/usr/bin/env python3
+"""
+SIMPLE: Direct HTTP weather server - no proxy needed
+"""
 import json
-from pathlib import Path
-from typing import Dict, Optional
-from fastmcp import FastMCP
-from dotenv import load_dotenv
-from aiohttp import ClientSession
+import os
+import requests
+from datetime import datetime, timedelta
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import uvicorn
+import logging
 
-# Load environment variables
-load_dotenv()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Initialize FastMCP
-mcp = FastMCP("mcp-weather")
+app = FastAPI(title="Simple Weather Server", version="1.0.0")
 
-# Cache configuration
-CACHE_DIR = Path.home() / ".cache" / "weather"
-LOCATION_CACHE_FILE = CACHE_DIR / "location_cache.json"
+OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
+DEMO_MODE = not OPENWEATHER_API_KEY
+AGENT_ID = "simple_weather_server"
 
-def get_cached_location_key(location: str) -> Optional[str]:
-    """Get location key from cache."""
-    if not LOCATION_CACHE_FILE.exists():
-        return None
+# Request models
+class WeatherRequest(BaseModel):
+    location: str = "Brussels"
+
+class ForecastRequest(BaseModel):
+    location: str = "Brussels"
+    days: int = 3
+
+def get_demo_weather(location: str):
+    """Demo weather data"""
+    demo_data = {
+        "brussels": {"temp": 18, "condition": "Partly cloudy", "humidity": 65},
+        "london": {"temp": 15, "condition": "Rainy", "humidity": 80},
+        "paris": {"temp": 20, "condition": "Sunny", "humidity": 55},
+    }
     
+    weather = demo_data.get(location.lower(), {"temp": 20, "condition": "Mild", "humidity": 60})
+    
+    return {
+        "location": location.title(),
+        "temperature": f"{weather['temp']}°C",
+        "conditions": weather["condition"],
+        "humidity": f"{weather['humidity']}%",
+        "timestamp": datetime.now().isoformat(),
+        "demo": True,
+        "source": "demo_weather",
+        "agent_id": AGENT_ID
+    }
+
+async def get_real_weather(location: str):
+    """Get real weather from OpenWeatherMap"""
     try:
-        with open(LOCATION_CACHE_FILE, "r") as f:
-            cache = json.load(f)
-            return cache.get(location)
-    except (json.JSONDecodeError, FileNotFoundError):
-        return None
-
-def cache_location_key(location: str, location_key: str):
-    """Cache location key for future use."""
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    
-    try:
-        if LOCATION_CACHE_FILE.exists():
-            with open(LOCATION_CACHE_FILE, "r") as f:
-                cache = json.load(f)
-        else:
-            cache = {}
-        
-        cache[location] = location_key
-        
-        with open(LOCATION_CACHE_FILE, "w") as f:
-            json.dump(cache, f, indent=2)
-    except Exception as e:
-        print(f"Warning: Failed to cache location key: {e}")
-
-@mcp.tool()
-async def get_hourly_weather(location: str) -> Dict:
-    """Get hourly weather forecast for a location."""
-    api_key = os.getenv("ACCUWEATHER_API_KEY", "X9Yx6HmKtT1PGlLeIHcmdydJe1VLpsCP")
-    if not api_key:
-        raise Exception("ACCUWEATHER_API_KEY environment variable is required")
-    
-    base_url = "http://dataservice.accuweather.com"
-    
-    # Try to get location key from cache first
-    location_key = get_cached_location_key(location)
-    
-    async with ClientSession() as session:
-        if not location_key:
-            location_search_url = f"{base_url}/locations/v1/cities/search"
-            params = {
-                "apikey": api_key,
-                "q": location,
-            }
-            async with session.get(location_search_url, params=params) as response:
-                locations = await response.json()
-                if response.status != 200:
-                    raise Exception(f"Error fetching location data: {response.status}, {locations}")
-                if not locations or len(locations) == 0:
-                    raise Exception("Location not found")
-            
-            location_key = locations[0]["Key"]
-            # Cache the location key for future use
-            cache_location_key(location, location_key)
-        
-        # Get current conditions
-        current_conditions_url = f"{base_url}/currentconditions/v1/{location_key}"
         params = {
-            "apikey": api_key,
-        }
-        async with session.get(current_conditions_url, params=params) as response:
-            current_conditions = await response.json()
-            
-        # Get hourly forecast
-        forecast_url = f"{base_url}/forecasts/v1/hourly/12hour/{location_key}"
-        params = {
-            "apikey": api_key,
-            "metric": "true",
-        }
-        async with session.get(forecast_url, params=params) as response:
-            forecast = await response.json()
-        
-        # Format response
-        hourly_data = []
-        for i, hour in enumerate(forecast, 1):
-            hourly_data.append({
-                "relative_time": f"+{i} hour{'s' if i > 1 else ''}",
-                "temperature": {
-                    "value": hour["Temperature"]["Value"],
-                    "unit": hour["Temperature"]["Unit"]
-                },
-                "weather_text": hour["IconPhrase"],
-                "precipitation_probability": hour["PrecipitationProbability"],
-                "precipitation_type": hour.get("PrecipitationType"),
-                "precipitation_intensity": hour.get("PrecipitationIntensity"),
-            })
-        
-        # Format current conditions
-        if current_conditions and len(current_conditions) > 0:
-            current = current_conditions[0]
-            current_data = {
-                "temperature": {
-                    "value": current["Temperature"]["Metric"]["Value"],
-                    "unit": current["Temperature"]["Metric"]["Unit"]
-                },
-                "weather_text": current["WeatherText"],
-                "relative_humidity": current.get("RelativeHumidity"),
-                "precipitation": current.get("HasPrecipitation", False),
-                "observation_time": current["LocalObservationDateTime"]
-            }
-        else:
-            current_data = "No current conditions available"
-        
-        # Get the locations data for response
-        location_search_url = f"{base_url}/locations/v1/cities/search"
-        params = {
-            "apikey": api_key,
             "q": location,
+            "appid": OPENWEATHER_API_KEY,
+            "units": "metric"
         }
-        async with session.get(location_search_url, params=params) as response:
-            locations = await response.json()
+        
+        response = requests.get(
+            "http://api.openweathermap.org/data/2.5/weather", 
+            params=params, 
+            timeout=10
+        )
+        response.raise_for_status()
+        
+        data = response.json()
+        return {
+            "location": data["name"],
+            "country": data["sys"]["country"],
+            "temperature": f"{data['main']['temp']}°C",
+            "feels_like": f"{data['main']['feels_like']}°C",
+            "conditions": data["weather"][0]["description"].title(),
+            "humidity": f"{data['main']['humidity']}%",
+            "pressure": f"{data['main']['pressure']} hPa",
+            "wind_speed": f"{data.get('wind', {}).get('speed', 0)} m/s",
+            "timestamp": datetime.now().isoformat(),
+            "demo": False,
+            "source": "openweathermap_api",
+            "agent_id": AGENT_ID
+        }
+        
+    except Exception as e:
+        logger.error(f"OpenWeatherMap API failed: {e}")
+        return None
+
+@app.get("/health")
+async def health_check():
+    """Health check"""
+    return {
+        "status": "healthy",
+        "agent_id": AGENT_ID,
+        "demo_mode": DEMO_MODE,
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.post("/weather")
+async def get_weather(request: WeatherRequest):
+    """Get current weather - simple endpoint"""
+    try:
+        location = request.location.strip() or "Brussels"
+        
+        logger.info(f"Weather request for: {location} (Demo: {DEMO_MODE})")
+        
+        # Try real API first
+        if not DEMO_MODE:
+            weather_data = await get_real_weather(location)
+            if weather_data:
+                logger.info(f"Real weather data retrieved for {location}")
+                return weather_data
+        
+        # Fallback to demo
+        logger.info(f"Using demo weather data for {location}")
+        return get_demo_weather(location)
+        
+    except Exception as e:
+        logger.error(f"Weather request failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Weather request failed: {str(e)}")
+
+@app.post("/forecast")
+async def get_forecast(request: ForecastRequest):
+    """Get weather forecast"""
+    try:
+        location = request.location.strip() or "Brussels"
+        days = max(1, min(request.days, 7))
+        
+        # Generate demo forecast
+        conditions = ["Sunny", "Partly cloudy", "Rainy", "Overcast", "Clear"]
+        temps = [18, 21, 16, 19, 22]
+        
+        forecast_days = []
+        for i in range(days):
+            day_data = {
+                "day": i + 1,
+                "date": (datetime.now() + timedelta(days=i)).date().isoformat(),
+                "temperature_high": f"{temps[i % len(temps)] + 3}°C",
+                "temperature_low": f"{temps[i % len(temps)] - 2}°C",
+                "conditions": conditions[i % len(conditions)],
+                "humidity": f"{60 + (i * 5) % 30}%"
+            }
+            forecast_days.append(day_data)
         
         return {
-            "location": locations[0]["LocalizedName"] if locations else location,
-            "location_key": location_key,
-            "country": locations[0]["Country"]["LocalizedName"] if locations else "Unknown",
-            "current_conditions": current_data,
-            "hourly_forecast": hourly_data
+            "location": location.title(),
+            "forecast_days": days,
+            "forecast": forecast_days,
+            "timestamp": datetime.now().isoformat(),
+            "demo": True,
+            "agent_id": AGENT_ID
         }
+        
+    except Exception as e:
+        logger.error(f"Forecast request failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Forecast request failed: {str(e)}")
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    logger.info(f"🌤️ Starting Simple Weather Server (API Mode: {'Real' if not DEMO_MODE else 'Demo'})")
+    uvicorn.run(app, host="0.0.0.0", port=8184)

@@ -1,5 +1,5 @@
 """
-COMPLETELY DYNAMIC LangGraph workflow with FIXED AutoGen 2.x compatibility and error handling
+COMPLETELY DYNAMIC LangGraph workflow with FIXED AutoGen 2.x compatibility and IMPROVED agent routing
 """
 from typing import Dict, Any, List, Optional, TypedDict, Annotated
 from langgraph.graph import StateGraph, START, END
@@ -33,7 +33,7 @@ class HybridAgentState(TypedDict):
 class SimpleMessageContext(MessageContext):
     """FIXED MessageContext with correct AutoGen 2.x TopicId constructor"""
     def __init__(self, sender: str = "hybrid_workflow", session_id: str = None):
-        # CRITICAL FIX: TopicId requires source as positional argument (from file 1)
+        # CRITICAL FIX: TopicId requires source as positional argument
         super().__init__(
             sender=sender,
             topic_id=TopicId("default", source="workflow"),  # FIXED: source as positional argument
@@ -45,7 +45,7 @@ class SimpleMessageContext(MessageContext):
         self.session_id = session_id
 
 class HybridAgenticWorkflow:
-    """COMPLETELY DYNAMIC workflow with FIXED error handling - NO hardcoded routing or responses"""
+    """COMPLETELY DYNAMIC workflow with FIXED error handling and IMPROVED agent routing"""
     
     def __init__(self, database=None, autogen_agents=None):
         self.database = database or db_manager
@@ -244,40 +244,63 @@ Keep it concise and focus on the reasoning process."""
             }
 
     async def _select_agent_dynamically_with_llm(self, user_input: str, available_agents: List[str], memory_context: Dict[str, Any]) -> str:
-        """COMPLETELY DYNAMIC agent selection using LLM analysis - NO hardcoded keywords"""
+        """IMPROVED: Multi-tier agent selection with keyword priority + LLM analysis + memory fallback"""
         try:
-            # DYNAMIC: Get agent capabilities from database
-            agent_capabilities = {}
-            for agent_id in available_agents:
-                try:
-                    # Get capabilities from database
-                    active_agents = self.database.get_active_agents()
-                    for agent_record in active_agents:
-                        if agent_record.get("agent_id") == agent_id:
-                            agent_capabilities[agent_id] = agent_record.get("capabilities", {})
-                            break
-                except Exception as e:
-                    logger.warning(f"Failed to get capabilities for {agent_id}: {e}")
+            user_lower = user_input.lower().strip()
             
-            # DYNAMIC: Use LLM to analyze input and select best agent
+            # TIER 1: IMMEDIATE keyword matching for clear cases (HIGHEST PRIORITY)
+            if any(word in user_lower for word in ["routine", "schedule", "habit", "daily", "morning", "evening", "workout"]):
+                if "routine" in available_agents:
+                    log_structured("agent_selection_direct", agent="routine", reason="keyword_match", input=user_input)
+                    return "routine"
+            
+            if any(word in user_lower for word in ["weather", "temperature", "forecast", "rain", "sunny", "cloudy", "wind", "snow"]):
+                if "weather" in available_agents:
+                    log_structured("agent_selection_direct", agent="weather", reason="keyword_match", input=user_input)
+                    return "weather"
+            
+            if any(word in user_lower for word in ["orchestrate", "coordinate", "manage", "organize", "help", "assist"]):
+                if "orchestrator" in available_agents:
+                    log_structured("agent_selection_direct", agent="orchestrator", reason="keyword_match", input=user_input)
+                    return "orchestrator"
+            
+            # TIER 2: ENHANCED LLM selection with improved prompt
             try:
-                from src.learning.behavior.behavior_engine import analyze_query_with_llm
-                input_analysis = await analyze_query_with_llm(user_input)
+                # DYNAMIC: Get agent capabilities from database
+                agent_capabilities = {}
+                for agent_id in available_agents:
+                    try:
+                        active_agents = self.database.get_active_agents()
+                        for agent_record in active_agents:
+                            if agent_record.get("agent_id") == agent_id:
+                                agent_capabilities[agent_id] = agent_record.get("capabilities", {})
+                                break
+                    except Exception as e:
+                        logger.warning(f"Failed to get capabilities for {agent_id}: {e}")
                 
-                # DYNAMIC: Let LLM decide based on analysis and capabilities
-                selection_prompt = f"""Based on this analysis and available agents, select the most appropriate agent:
+                # IMPROVED: More specific LLM prompt for agent selection
+                selection_prompt = f"""You are an intelligent agent router. Analyze the user input and select the most appropriate agent.
 
-User Input Analysis: {input_analysis}
-Available Agents: {list(agent_capabilities.keys())}
-Agent Capabilities: {agent_capabilities}
-Memory Context: {memory_context.get('memory_count', 0)} relevant memories
+User Input: "{user_input}"
 
-Select the agent ID that best matches the user's intent and domain. Consider:
-1. The intent type and domain from analysis
-2. Agent capabilities and specializations
-3. Previous memory context if relevant
+Available Agents:
+- weather: handles weather queries, forecasts, temperature, rain, sun, clouds, wind
+- routine: handles daily routines, schedules, habits, morning/evening routines, workout plans
+- orchestrator: handles general conversation, coordination, questions, assistance
 
-Respond with only the agent ID (e.g., 'weather', 'routine', 'orchestrator')."""
+RULES:
+1. If input mentions weather-related terms → select "weather"
+2. If input mentions routine/schedule/habit terms → select "routine"  
+3. For general conversation or unclear requests → select "orchestrator"
+
+Examples:
+- "routine" → routine
+- "weather" → weather
+- "create morning routine" → routine
+- "temperature today" → weather
+- "hello" → orchestrator
+
+Respond with ONLY the agent name (weather, routine, or orchestrator):"""
 
                 import requests
                 from config.settings import settings
@@ -288,47 +311,60 @@ Respond with only the agent ID (e.g., 'weather', 'routine', 'orchestrator')."""
                         "model": settings.llm.default_model,
                         "prompt": selection_prompt,
                         "stream": False,
-                        "options": {"temperature": 0.2, "max_tokens": 50}
+                        "options": {"temperature": 0.1, "max_tokens": 10}  # Very low temperature for consistency
                     },
-                    timeout=10
+                    timeout=8
                 )
                 
                 if response.status_code == 200:
                     llm_selection = response.json().get("response", "").strip().lower()
-                    # Validate selection
-                    for agent_id in available_agents:
-                        if agent_id.lower() in llm_selection:
-                            logger.info(f"LLM selected agent: {agent_id}")
-                            return agent_id
+                    
+                    # Validate LLM selection
+                    valid_agents = ["weather", "routine", "orchestrator"]
+                    for agent in valid_agents:
+                        if agent in llm_selection and agent in available_agents:
+                            log_structured("agent_selection_llm", agent=agent, input=user_input, llm_response=llm_selection)
+                            return agent
                 
             except Exception as e:
                 logger.warning(f"LLM agent selection failed: {e}")
             
-            # DYNAMIC FALLBACK: Use memory context to learn from previous selections
+            # TIER 3: MEMORY-BASED fallback (improved logic)
             if memory_context and memory_context.get("retrieved_memories"):
                 memories = memory_context["retrieved_memories"].get("documents", [])
                 metadatas = memory_context["retrieved_memories"].get("metadatas", [])
                 
                 if memories and metadatas:
-                    # Look for agent references in memory
+                    # Look for agent references in memory with weight scoring
                     agent_mentions = {}
                     for i, memory in enumerate(memories[:3]):
                         metadata = metadatas[0][i] if metadatas and metadatas[0] and i < len(metadatas[0]) else {}
+                        memory_str = str(memory).lower()
+                        metadata_str = str(metadata).lower()
+                        
+                        # Weight recent memories higher
+                        weight = 3 - i  # First memory gets weight 3, second gets 2, etc.
+                        
                         for agent_id in available_agents:
-                            if agent_id in str(memory).lower() or agent_id in str(metadata).lower():
-                                agent_mentions[agent_id] = agent_mentions.get(agent_id, 0) + 1
+                            if agent_id in memory_str or agent_id in metadata_str:
+                                agent_mentions[agent_id] = agent_mentions.get(agent_id, 0) + weight
                     
                     if agent_mentions:
                         best_agent = max(agent_mentions, key=agent_mentions.get)
-                        logger.info(f"Memory-based agent selection: {best_agent}")
+                        log_structured("agent_selection_memory", agent=best_agent, input=user_input, mentions=agent_mentions)
                         return best_agent
             
-            # FINAL FALLBACK: Use orchestrator if available, otherwise first available
-            return "orchestrator" if "orchestrator" in available_agents else (available_agents[0] if available_agents else "orchestrator")
-            
+            # TIER 4: ENHANCED rule-based fallback
+            if any(keyword in user_lower for keyword in ["routine", "schedule", "habit", "daily", "morning", "evening", "create", "plan"]):
+                return "routine" if "routine" in available_agents else "orchestrator"
+            elif any(keyword in user_lower for keyword in ["weather", "temperature", "forecast", "rain", "sun", "cloud", "wind"]):
+                return "weather" if "weather" in available_agents else "orchestrator"
+            else:
+                return "orchestrator" if "orchestrator" in available_agents else available_agents[0]
+                
         except Exception as e:
-            logger.error(f"Dynamic agent selection failed: {e}")
-            return "orchestrator"
+            log_structured("agent_selection_error", error=str(e))
+            return "orchestrator" if "orchestrator" in available_agents else available_agents[0]
 
     async def _execute_via_autogen_agents(self, state: HybridAgentState) -> Dict[str, Any]:
         """Execute with FIXED AutoGen integration and dynamic processing"""
@@ -417,10 +453,10 @@ Respond with only the agent ID (e.g., 'weather', 'routine', 'orchestrator')."""
     async def _call_autogen_agent_with_session_context(self, user_input: str, agent_type: str, session_id: str, memory_context: Dict[str, Any]) -> str:
         """FIXED: Call AutoGen agent with correct TopicId constructor and dynamic routing"""
         try:
-            # FIXED: Create context with correct TopicId constructor (from file 1)
+            # FIXED: Create context with correct TopicId constructor
             context = SimpleMessageContext("hybrid_workflow", session_id)
             
-            # DYNAMIC: Route to available agent (keeping dynamic behavior from file 2)
+            # DYNAMIC: Route to available agent (keeping dynamic behavior)
             if agent_type in self.autogen_agents:
                 agent = self.autogen_agents[agent_type]
                 if hasattr(agent, 'set_session_context'):

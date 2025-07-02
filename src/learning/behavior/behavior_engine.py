@@ -42,7 +42,7 @@ def get_chroma_setup():
         
         try:
             from sentence_transformers import SentenceTransformer
-            embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+            embedding_model = SentenceTransformer("all-MiniLM-L6-v2", cache_folder="/data/sentence_transformers")
             logger.info("Sentence transformer model loaded")
         except Exception as e:
             logger.warning(f"Sentence transformer setup failed: {e}")
