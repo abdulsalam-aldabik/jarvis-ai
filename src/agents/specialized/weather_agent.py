@@ -1,456 +1,218 @@
 """
-Direct Weather Agent - AccuWeather API Integration
-Fast, reliable weather data with behavior learning integration
+AutoGen 0.6.2 Weather AssistantAgent with MCP Tools
+Following: https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/tutorial/agents.html
 """
-import asyncio
-import json
 import os
-from typing import Dict, Any, Optional, List
-from autogen_core import MessageContext
-import requests
+import asyncio
+import time
+from typing import Dict, Any, Optional
 
-from src.agents.core.base_agent import AutoGenBaseAgent
+from autogen_agentchat.agents import AssistantAgent
+from autogen_agentchat.messages import TextMessage
+from autogen_ext.tools.mcp import mcp_server_tools
+
+from src.agents.core.base_agent import AgentBase, get_model_client
+from src.agents.core.mcp_tools import mcp_tools_manager
 from src.agents.core.logging_config import log_structured
 
-
-class ReliableWeatherAgent(AutoGenBaseAgent):
-    """Weather agent that fetches weather data directly from AccuWeather API"""
+class WeatherAgent(AgentBase):
+    """CORRECT AutoGen 0.6.2 Weather AssistantAgent with MCP tools integration"""
     
     def __init__(self):
         super().__init__(
             name="weather",
-            description="Weather information specialist with AccuWeather API integration",
-            agent_type="weather"
+            description="AccuWeather-powered weather agent with AutoGen 0.6.2 and MCP tools",
+            agent_type="weather",
+            system_message="""You are a weather specialist using AutoGen 0.6.2 architecture. 
+            You provide accurate, helpful weather information and forecasts using MCP tools.
+            
+            Guidelines:
+            - Provide clear, actionable weather information
+            - Include relevant details like temperature, conditions, and recommendations
+            - Use conversational language, not just data dumps
+            - Suggest appropriate clothing or activities based on weather
+            - Format responses in a user-friendly way"""
         )
+        self.assigned_tools = mcp_tools_manager.get_tools_for_agent("weather")
+        self.location_cache: Dict[str, str] = {}
+        self.weather_cache: Dict[str, tuple] = {}
+        self.cache_ttl = 900  # 15-minute cache
         
-        # AccuWeather API configuration
-        self.accuweather_api_key = os.getenv("ACCUWEATHER_API_KEY")
-        self.demo_mode = not self.accuweather_api_key
-        self.location_search_url = "http://dataservice.accuweather.com/locations/v1/cities/search"
-        self.current_weather_url = "http://dataservice.accuweather.com/currentconditions/v1"
-        self.forecast_url = "http://dataservice.accuweather.com/forecasts/v1/daily/1day"
-        
-        # Cache for location keys
-        self.location_cache = {}
-        
-        self._initialized = True
-        
-        log_structured("weather_agent_accuweather_init", 
-                      api_available=bool(self.accuweather_api_key),
-                      mode="real" if not self.demo_mode else "demo")
+        log_structured("weather_agent_062_init",
+                     autogen_version="0.6.2-official",
+                     mcp_enabled=True)
 
-    async def process_message(self, message: str, ctx: MessageContext) -> str:
-        """Process weather messages with direct AccuWeather API calls"""
+    async def process_message(self, message: str, context: Dict[str, Any] = None) -> str:
+        """Enhanced weather processing with AutoGen 0.6.2 and MCP tools"""
         try:
-            log_structured("weather_processing_start", 
-                          message=message[:100], 
-                          session_id=self.current_session_id,
-                          api_mode="accuweather_direct")
+            if not self.is_weather_query(message):
+                return await self.get_help_response()
             
-            if not self._is_weather_query(message):
-                return self._provide_weather_help()
+            location = self.extract_location(message)
+            is_forecast = "forecast" in message.lower()
             
-            # Try behavior learning first for context
-            response = await self._process_with_memory_context(message)
-            if response:
-                await self._store_interaction(message, response)
-                return response
+            # Check cache first
+            cache_key = f"{location}_{'f' if is_forecast else 'c'}"
+            if cache_key in self.weather_cache:
+                timestamp, cached_result = self.weather_cache[cache_key]
+                if time.time() - timestamp < self.cache_ttl:
+                    log_structured("weather_cache_hit", location=location)
+                    await self.store_weather_interaction(message, cached_result, location)
+                    return cached_result
             
-            # Get fresh weather data
-            response = await self._get_fresh_weather(message)
-            await self._store_interaction(message, response)
-            return response
+            # Use MCP tools for weather data
+            if is_forecast:
+                result = await self.get_forecast_via_mcp(location)
+            else:
+                result = await self.get_current_via_mcp(location)
+            
+            # Cache result
+            self.weather_cache[cache_key] = (time.time(), result)
+            await self.store_weather_interaction(message, result, location)
+            
+            return result
             
         except Exception as e:
-            log_structured("weather_processing_error", error=str(e))
-            return f"⚠️ Weather service temporarily unavailable: {str(e)}"
+            log_structured("weather_fetch_failed", location=location, error=str(e))
+            return f"I'm having trouble getting weather information for {location}. Please try again."
 
-    def _is_weather_query(self, message: str) -> bool:
-        """Detect weather queries"""
-        weather_keywords = [
-            "weather", "temperature", "forecast", "rain", "sunny", "cloudy", 
-            "hot", "cold", "humid", "wind", "storm", "snow", "climate",
-            "degrees", "celsius", "fahrenheit", "precipitation"
-        ]
-        return any(keyword in message.lower() for keyword in weather_keywords)
-
-    async def _process_with_memory_context(self, message: str) -> Optional[str]:
-        """Use behavior learning for enhanced context"""
+    async def get_current_via_mcp(self, location: str) -> str:
+        """Get current weather using MCP tools"""
         try:
-            from src.learning.behavior.behavior_engine import search_semantic_memory
+            # Get available MCP tools
+            tools = await mcp_tools_manager.get_available_tools()
             
-            memory_results = search_semantic_memory(
-                message, n_results=3, session_id=self.current_session_id
-            )
+            # Find weather tool
+            weather_tool = None
+            for tool in tools:
+                if "weather" in tool.name.lower() and "current" in tool.name.lower():
+                    weather_tool = tool
+                    break
             
-            if memory_results and memory_results.get("documents"):
-                return await self._enhance_with_memory_context(message, memory_results)
-            
-            return None
-            
-        except ImportError:
-            log_structured("behavior_learning_unavailable")
-            return None
+            if weather_tool:
+                result = await mcp_tools_manager.call_mcp_tool(
+                    weather_tool.name,
+                    {"location": location}
+                )
+                return self.format_weather_response(result, location)
+            else:
+                return self.demo_weather(location)
+                
         except Exception as e:
-            log_structured("behavior_learning_error", error=str(e))
-            return None
+            log_structured("current_weather_mcp_failed", location=location, error=str(e))
+            return self.demo_weather(location)
 
-    async def _enhance_with_memory_context(self, message: str, memory_results: Dict) -> str:
-        """Combine current weather with memory context"""
+    async def get_forecast_via_mcp(self, location: str) -> str:
+        """Get weather forecast using MCP tools"""
         try:
-            location = self._extract_location(message)
-            current_weather = await self._fetch_current_weather(location)
+            # Get available MCP tools
+            tools = await mcp_tools_manager.get_available_tools()
             
-            response_parts = [f"🌤️ **Current weather for {location}:**"]
-            response_parts.append(current_weather)
+            # Find forecast tool
+            forecast_tool = None
+            for tool in tools:
+                if "weather" in tool.name.lower() and "forecast" in tool.name.lower():
+                    forecast_tool = tool
+                    break
             
-            # Add memory context
-            previous_locations = self._extract_previous_locations(memory_results)
-            if previous_locations and len(previous_locations) > 1:
-                unique_locations = list(set(previous_locations[:3]))
-                if location.lower() not in [loc.lower() for loc in unique_locations]:
-                    response_parts.append(f"\n💭 *I remember you've also asked about: {', '.join(unique_locations)}*")
-            
-            return "\n".join(response_parts)
-            
+            if forecast_tool:
+                result = await mcp_tools_manager.call_mcp_tool(
+                    forecast_tool.name,
+                    {"location": location, "days": 1}
+                )
+                return self.format_forecast_response(result, location)
+            else:
+                return self.demo_forecast(location)
+                
         except Exception as e:
-            log_structured("memory_context_error", error=str(e))
-            return await self._get_fresh_weather(message)
+            log_structured("forecast_mcp_failed", location=location, error=str(e))
+            return self.demo_forecast(location)
 
-    async def _get_fresh_weather(self, message: str) -> str:
-        """Get fresh weather data"""
-        location = self._extract_location(message)
-        
-        if "forecast" in message.lower():
-            return await self._get_forecast(location)
-        else:
-            return await self._fetch_current_weather(location)
-
-    async def _get_location_key(self, location: str) -> Optional[str]:
-        """Get AccuWeather location key for a city"""
+    def format_weather_response(self, data: Dict[str, Any], location: str) -> str:
+        """Format weather response from MCP tool data"""
         try:
-            if location in self.location_cache:
-                return self.location_cache[location]
-                
-            if self.demo_mode:
-                return None
+            temp = data.get("temperature", 20)
+            feels_like = data.get("feels_like", temp)
+            condition = data.get("condition", "Clear")
+            humidity = data.get("humidity", 50)
+            wind_speed = data.get("wind_speed", 10)
             
-            params = {
-                "apikey": self.accuweather_api_key,
-                "q": location
-            }
-            
-            log_structured("accuweather_location_search", location=location)
-            
-            response = requests.get(self.location_search_url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            if data and len(data) > 0:
-                location_key = data[0]["Key"]
-                self.location_cache[location] = location_key
-                
-                log_structured("accuweather_location_found", 
-                             location=location, 
-                             location_key=location_key,
-                             full_name=data[0].get("LocalizedName", location))
-                
-                return location_key
-            
-            return None
-            
-        except Exception as e:
-            log_structured("accuweather_location_error", location=location, error=str(e))
-            return None
-
-    async def _fetch_current_weather(self, location: str) -> str:
-        """Fetch current weather from AccuWeather API"""
-        try:
-            if self.demo_mode:
-                return self._get_demo_weather(location)
-            
-            # Get location key first
-            location_key = await self._get_location_key(location)
-            if not location_key:
-                log_structured("accuweather_no_location_key", location=location)
-                return self._get_demo_weather(location)
-            
-            # Get current conditions
-            params = {
-                "apikey": self.accuweather_api_key,
-                "details": "true"
-            }
-            
-            url = f"{self.current_weather_url}/{location_key}"
-            
-            log_structured("accuweather_api_call", location=location, endpoint="current")
-            
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            if data and len(data) > 0:
-                weather_data = data[0]
-                
-                weather_info = {
-                    "location": location,
-                    "temperature": f"{weather_data['Temperature']['Metric']['Value']:.1f}°C",
-                    "feels_like": f"{weather_data.get('RealFeelTemperature', {}).get('Metric', {}).get('Value', 'N/A'):.1f}°C" if weather_data.get('RealFeelTemperature', {}).get('Metric', {}).get('Value') else "N/A",
-                    "conditions": weather_data['WeatherText'],
-                    "humidity": f"{weather_data.get('RelativeHumidity', 'N/A')}%" if weather_data.get('RelativeHumidity') else "N/A",
-                    "pressure": f"{weather_data.get('Pressure', {}).get('Metric', {}).get('Value', 'N/A')} mb" if weather_data.get('Pressure', {}).get('Metric', {}).get('Value') else "N/A",
-                    "wind_speed": f"{weather_data.get('Wind', {}).get('Speed', {}).get('Metric', {}).get('Value', 0):.1f} km/h" if weather_data.get('Wind', {}).get('Speed', {}).get('Metric', {}).get('Value') else "N/A",
-                    "visibility": f"{weather_data.get('Visibility', {}).get('Metric', {}).get('Value', 'N/A')} km" if weather_data.get('Visibility', {}).get('Metric', {}).get('Value') else "N/A",
-                    "demo": False
-                }
-                
-                log_structured("accuweather_api_success", 
-                             location=location, 
-                             temperature=weather_info["temperature"])
-                
-                return self._format_weather_response(weather_info)
-            
-            return self._get_demo_weather(location)
-            
-        except requests.exceptions.RequestException as e:
-            log_structured("accuweather_api_error", location=location, error=str(e))
-            return self._get_demo_weather(location)
-        except Exception as e:
-            log_structured("accuweather_fetch_error", location=location, error=str(e))
-            return self._get_demo_weather(location)
-
-    async def _get_forecast(self, location: str) -> str:
-        """Get weather forecast from AccuWeather"""
-        try:
-            if self.demo_mode:
-                return self._get_demo_forecast(location)
-            
-            # Get location key first
-            location_key = await self._get_location_key(location)
-            if not location_key:
-                return self._get_demo_forecast(location)
-            
-            # Get forecast
-            params = {
-                "apikey": self.accuweather_api_key,
-                "details": "true",
-                "metric": "true"
-            }
-            
-            url = f"{self.forecast_url}/{location_key}"
-            
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            if data and "DailyForecasts" in data and len(data["DailyForecasts"]) > 0:
-                forecast = data["DailyForecasts"][0]
-                
-                forecast_parts = [f"🌤️ **Today's forecast for {location}:**"]
-                
-                # Day forecast
-                if "Day" in forecast:
-                    day_forecast = forecast["Day"]
-                    forecast_parts.append(f"🌅 **Day**: {day_forecast.get('IconPhrase', 'N/A')}")
-                
-                # Night forecast  
-                if "Night" in forecast:
-                    night_forecast = forecast["Night"]
-                    forecast_parts.append(f"🌙 **Night**: {night_forecast.get('IconPhrase', 'N/A')}")
-                
-                # Temperature range
-                if "Temperature" in forecast:
-                    temp = forecast["Temperature"]
-                    min_temp = temp.get("Minimum", {}).get("Value", "N/A")
-                    max_temp = temp.get("Maximum", {}).get("Value", "N/A")
-                    forecast_parts.append(f"🌡️ **Range**: {min_temp}°C - {max_temp}°C")
-                
-                return "\n".join(forecast_parts)
-            
-            return self._get_demo_forecast(location)
-            
-        except Exception as e:
-            log_structured("accuweather_forecast_error", location=location, error=str(e))
-            return self._get_demo_forecast(location)
-
-    def _format_weather_response(self, weather_data: Dict[str, Any]) -> str:
-        """Format weather response"""
-        try:
-            parts = [
-                f"📍 **{weather_data['location']}**",
-                f"🌡️ {weather_data['temperature']}" + (f" (feels like {weather_data['feels_like']})" if weather_data['feels_like'] != "N/A" else ""),
-                f"☁️ {weather_data['conditions']}"
-            ]
-            
-            if weather_data['humidity'] != "N/A":
-                parts.append(f"💧 Humidity: {weather_data['humidity']}")
-            
-            if weather_data['wind_speed'] != "N/A":
-                parts.append(f"🌬️ Wind: {weather_data['wind_speed']}")
-            
-            if weather_data['visibility'] != "N/A":
-                parts.append(f"👁️ Visibility: {weather_data['visibility']}")
-            
-            if weather_data.get("demo", False):
-                parts.append("*(Demo mode - API unavailable)*")
-            
-            return "\n".join(parts)
+            return f"""Current weather for {location}:
+{temp:.1f}°C (feels like {feels_like:.1f}°C)
+{condition}
+Humidity: {humidity}%
+Wind: {wind_speed:.1f} km/h"""
             
         except Exception:
-            return str(weather_data)
+            return self.demo_weather(location)
 
-    def _extract_location(self, message: str) -> str:
+    def format_forecast_response(self, data: Dict[str, Any], location: str) -> str:
+        """Format forecast response from MCP tool data"""
+        try:
+            day_condition = data.get("day_condition", "Partly Cloudy")
+            night_condition = data.get("night_condition", "Clear")
+            min_temp = data.get("min_temperature", 15)
+            max_temp = data.get("max_temperature", 25)
+            
+            return f"""Today's forecast for {location}:
+Day: {day_condition}
+Night: {night_condition}
+Range: {min_temp:.1f}°C - {max_temp:.1f}°C"""
+            
+        except Exception:
+            return self.demo_forecast(location)
+
+    def extract_location(self, message: str) -> str:
         """Extract location from message"""
-        words = message.lower().split()
-        
-        # Look for location indicators
-        location_indicators = ["in", "for", "at", "from", "near", "around"]
-        for i, word in enumerate(words):
-            if word in location_indicators and i + 1 < len(words):
-                return words[i + 1].strip("?.,!").title()
-        
-        # Check for known cities
-        cities = {
-            "brussels": "Brussels", "etterbeek": "Etterbeek", "paris": "Paris", 
-            "london": "London", "amsterdam": "Amsterdam", "berlin": "Berlin",
-            "antwerp": "Antwerp", "ghent": "Ghent", "bruges": "Bruges",
-            "new york": "New York", "tokyo": "Tokyo", "sydney": "Sydney"
-        }
-        
-        for word in words:
-            clean_word = word.strip("?.,!")
-            if clean_word in cities:
-                return cities[clean_word]
-        
-        return "Brussels"  # Default
+        tokens = message.lower().split()
+        for idx, token in enumerate(tokens):
+            if token in ["in", "for", "at"] and idx + 1 < len(tokens):
+                return tokens[idx + 1].title()
+        return "Brussels"
 
-    def _extract_previous_locations(self, memory_results: Dict) -> List[str]:
-        """Extract locations from memory"""
+    def is_weather_query(self, message: str) -> bool:
+        """Check if message is weather-related"""
+        keywords = ["weather", "temperature", "forecast", "rain", "snow", "wind", "sunny"]
+        return any(keyword in message.lower() for keyword in keywords)
+
+    async def get_help_response(self) -> str:
+        """Generate help response using AutoGen 0.6.2"""
+        return """I can help with weather information! Try questions like:
+- What's the weather in Brussels?
+- Weather forecast for tomorrow
+- Temperature in Paris
+
+I provide accurate weather data and helpful recommendations."""
+
+    def demo_weather(self, location: str) -> str:
+        """Demo weather response"""
+        return f"""Current weather for {location}:
+19.0°C (feels like 21.0°C)
+Partly cloudy
+Humidity: 60%
+Wind: 13 km/h
+[Demo mode - MCP tools unavailable]"""
+
+    def demo_forecast(self, location: str) -> str:
+        """Demo forecast response"""
+        return f"""Today's forecast for {location}:
+Day: Partly Cloudy
+Night: Clear
+Range: 15°C - 21°C
+[Demo mode - MCP tools unavailable]"""
+
+    async def store_weather_interaction(self, user_message: str, response: str, location: str):
+        """Store weather interaction in memory"""
         try:
-            metadatas = memory_results.get("metadatas", [[]])[0]
-            locations = []
-            
-            for meta in metadatas:
-                if meta and isinstance(meta, dict) and "location" in meta:
-                    locations.append(meta["location"])
-            
-            return locations
-        except:
-            return []
-
-    def _get_demo_weather(self, location: str) -> str:
-        """Get demo weather data"""
-        demo_data = {
-            "brussels": {
-                "location": "Brussels, BE",
-                "temperature": "18.5°C",
-                "feels_like": "16.2°C",
-                "conditions": "Partly Cloudy",
-                "humidity": "65%",
-                "wind_speed": "12.5 km/h",
-                "visibility": "10.0 km",
-                "demo": True
-            },
-            "etterbeek": {
-                "location": "Etterbeek, BE", 
-                "temperature": "18.2°C",
-                "feels_like": "16.0°C",
-                "conditions": "Mild",
-                "humidity": "63%",
-                "wind_speed": "10.8 km/h",
-                "visibility": "10.0 km",
-                "demo": True
-            },
-            "paris": {
-                "location": "Paris, FR",
-                "temperature": "20.1°C",
-                "feels_like": "19.5°C",
-                "conditions": "Sunny",
-                "humidity": "55%",
-                "wind_speed": "15.2 km/h",
-                "visibility": "15.0 km",
-                "demo": True
-            }
-        }
-        
-        weather_data = demo_data.get(location.lower(), {
-            "location": f"{location}",
-            "temperature": "19.0°C",
-            "feels_like": "17.5°C",
-            "conditions": "Mild",
-            "humidity": "60%",
-            "wind_speed": "13.5 km/h",
-            "visibility": "10.0 km",
-            "demo": True
-        })
-        
-        return self._format_weather_response(weather_data)
-
-    def _get_demo_forecast(self, location: str) -> str:
-        """Get demo forecast"""
-        return f"""🌤️ **Today's forecast for {location}:**
-🌅 **Day**: Partly Cloudy
-🌙 **Night**: Clear
-🌡️ **Range**: 15.5°C - 21.2°C
-*(Demo mode - API unavailable)*"""
-
-    def _provide_weather_help(self) -> str:
-        """Provide weather help"""
-        api_status = "✅ AccuWeather API" if not self.demo_mode else "⚠️ Demo mode"
-        
-        return f"""🌤️ **I can help with weather information!** ({api_status})
-
-**Try asking:**
-• *"What's the weather in Brussels?"*
-• *"Weather forecast for tomorrow"*
-• *"Temperature in Etterbeek"*
-• *"Is it raining in Paris?"*
-
-I use AccuWeather API for accurate, real-time weather data."""
-
-    async def _store_interaction(self, message: str, response: str):
-        """Store interaction in database and behavior learning"""
-        try:
-            # Ensure response is a string
-            if not isinstance(response, str):
-                response = str(response)
-            
-            interaction_id = self.database.store_agent_interaction(
-                agent_id=self.agent_id,
-                interaction_type="weather_query",
-                data={
-                    "user_message": message,
-                    "agent_response": response,
+            await self.vector_memory.add(
+                content=f"Weather Query: {user_message}\nResponse: {response[:200]}",
+                metadata={
+                    "type": "weather_interaction",
+                    "agent_id": self.agent_id,
                     "session_id": self.current_session_id,
-                    "api_mode": "accuweather_direct",
-                    "demo_mode": self.demo_mode,
-                    "location": self._extract_location(message)
+                    "location": location,
+                    "autogen_version": "0.6.2-official"
                 }
             )
-            
-            # Add to semantic memory for behavior learning
-            try:
-                from src.learning.behavior.behavior_engine import add_to_semantic_memory
-                await add_to_semantic_memory(
-                    content=f"Weather Query: {message} | Response: {response[:200]}",
-                    metadata={
-                        "type": "weather_interaction",
-                        "agent_id": self.agent_id,
-                        "session_id": self.current_session_id,
-                        "interaction_id": interaction_id,
-                        "domain": "weather",
-                        "location": self._extract_location(message),
-                        "api_mode": "accuweather_direct"
-                    }
-                )
-            except ImportError:
-                log_structured("behavior_learning_unavailable")
-            except Exception as memory_error:
-                log_structured("behavior_learning_storage_error", error=str(memory_error))
-            
-            log_structured("weather_interaction_stored", 
-                         interaction_id=interaction_id,
-                         location=self._extract_location(message))
-            
         except Exception as e:
-            log_structured("weather_interaction_storage_error", error=str(e))
+            log_structured("weather_memory_store_fail", error=str(e))

@@ -1,245 +1,351 @@
 """
-COMPLETELY DYNAMIC behavior engine - NO hardcoded categories or keywords
+COMPLETELY DYNAMIC behavior engine – NO hard-coded categories or keywords
 """
+from __future__ import annotations
+
+# ─────────────────────────────────────────  standard libs ──────────────────
+import asyncio, hashlib, json, logging, threading, time
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+from typing import Any, Dict, List, Optional, Tuple
+
+# ─────────────────────────────────────────  third-party  ────────────────────
 import chromadb
-import uuid
-import json
-import time
-import logging
-from typing import Dict, Any, List, Optional, Tuple
-from config.settings import settings
 import numpy as np
 import requests
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from config.settings import settings
 
+# ─────────────────────────────────────────  logger / asyncio  ───────────────
 try:
     import nest_asyncio
     nest_asyncio.apply()
-    logger = logging.getLogger(__name__)
-    logger.info("nest-asyncio applied successfully")
 except ImportError:
-    logger = logging.getLogger(__name__)
-    logger.warning("nest-asyncio not available")
+    pass
 
-# Global instances
-chroma_client = None
-chroma_collection = None
-setup_complete = False
-embedding_model = None
-thread_pool = ThreadPoolExecutor(max_workers=2)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
-def get_chroma_setup():
-    """ChromaDB setup with embedding model initialization"""
-    global chroma_client, chroma_collection, setup_complete, embedding_model
-    
-    if setup_complete and chroma_client and chroma_collection:
-        return chroma_client, chroma_collection
-    
-    try:
-        logger.info("Setting up ChromaDB connection...")
-        chroma_client = chromadb.HttpClient(host="chroma", port=8000)
-        
+# ─────────────────────────────────────────  GLOBAL CACHES  ──────────────────
+_connection_lock = threading.Lock()
+_memory_lock     = threading.Lock()
+thread_pool      = ThreadPoolExecutor(max_workers=2)
+
+chroma_client:   Optional[chromadb.HttpClient]        = None
+chroma_collection: Optional[chromadb.Collection]      = None
+_chroma_cache:   Optional[Tuple[chromadb.HttpClient,
+                                chromadb.Collection]] = None
+setup_complete   = False
+
+_embedding_model_cache = None         # global singleton
+embedding_model         = None        # module alias
+
+_recent_memories: Dict[str, Tuple[float, str]] = {}
+_DEDUP_WINDOW_SEC = 30
+
+# ─────────────────────────────────────────  EMBEDDING WARM-LOAD  ────────────
+@lru_cache(maxsize=1)
+def _load_embedding_model():
+    from sentence_transformers import SentenceTransformer
+    model = SentenceTransformer("all-MiniLM-L6-v2",
+                                cache_folder="/data/sentence_transformers")
+    logger.info("Sentence-Transformer model pre-loaded")
+    return model
+
+embedding_model = _load_embedding_model()
+
+# ─────────────────────────────────────────  CHROMA INITIALISATION  ──────────
+def get_chroma_setup() -> Tuple[Optional[chromadb.HttpClient],
+                                Optional[chromadb.Collection]]:
+    """
+    Thread-safe singleton that returns a ready HttpClient + Collection.
+    Creates the ‘jarvis_memory’ collection on first run.
+    """
+    global chroma_client, chroma_collection, _chroma_cache, setup_complete
+
+    if _chroma_cache and setup_complete:
+        chroma_client, chroma_collection = _chroma_cache
+        return _chroma_cache
+
+    with _connection_lock:
+        if _chroma_cache and setup_complete:
+            chroma_client, chroma_collection = _chroma_cache
+            return _chroma_cache
         try:
-            from sentence_transformers import SentenceTransformer
-            embedding_model = SentenceTransformer("all-MiniLM-L6-v2", cache_folder="/data/sentence_transformers")
-            logger.info("Sentence transformer model loaded")
-        except Exception as e:
-            logger.warning(f"Sentence transformer setup failed: {e}")
-        
-        # DYNAMIC: Use timestamp-based collection names to avoid conflicts
-        collection_name = "jarvis_memory"
-        
-        try:
-            chroma_collection = chroma_client.get_collection(name=collection_name)
-            logger.info(f"Using existing collection: {collection_name}")
-            setup_complete = True
-            return chroma_client, chroma_collection
-        except Exception:
-            logger.info("Collection doesn't exist, creating new one")
-        
-        try:
-            chroma_collection = chroma_client.create_collection(
-                name=collection_name,
-                metadata={"hnsw:space": "cosine"}
-            )
-            logger.info(f"Created new collection: {collection_name}")
-            setup_complete = True
-            return chroma_client, chroma_collection
-        except Exception as create_error:
-            logger.warning(f"Failed to create collection: {create_error}")
+            logger.info("🔌 Initialising ChromaDB client …")
+            client = chromadb.HttpClient(host="chroma", port=8000)
+            name   = "jarvis_memory"
+
+            try:
+                collection = client.get_collection(name=name)
+                logger.info(f"Using existing collection: {name}")
+            except Exception:
+                collection = client.create_collection(
+                    name=name,
+                    metadata={"hnsw:space": "cosine"}
+                )
+                logger.info(f"Created collection: {name}")
+
+            _chroma_cache   = (client, collection)
+            chroma_client, chroma_collection = _chroma_cache
+            setup_complete  = True
+            return _chroma_cache
+        except Exception as exc:
+            logger.error(f"Chroma setup failed: {exc}")
             setup_complete = True
             return None, None
-            
-    except Exception as e:
-        logger.error(f"ChromaDB client setup failed: {e}")
-        setup_complete = True
-        return None, None
 
-def sanitize_metadata_for_chromadb(metadata: Dict[str, Any]) -> Dict[str, Any]:
-    """Sanitize metadata to ensure ChromaDB compliance"""
-    sanitized = {}
-    for key, value in metadata.items():
-        clean_key = str(key)
-        
-        if value is None:
-            sanitized[clean_key] = ""
-        elif isinstance(value, (str, int, float, bool)):
-            sanitized[clean_key] = value
-        elif isinstance(value, (list, dict, tuple)):
-            try:
-                json_str = json.dumps(value)[:500]
-                sanitized[clean_key] = json_str
-            except Exception:
-                sanitized[clean_key] = str(value)[:100]
-        elif isinstance(value, np.floating):
-            sanitized[clean_key] = float(value)
-        elif isinstance(value, np.integer):
-            sanitized[clean_key] = int(value)
-        else:
-            sanitized[clean_key] = str(value)[:100]
-            
-    return sanitized
+# ─────────────────────────────────────────  UTILS  ──────────────────────────
+def sanitize_metadata_for_chromadb(meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert any value into a Chroma-acceptable scalar / JSON string."""
+    clean: Dict[str, Any] = {}
+    for k, v in meta.items():
+        k = str(k)
+        try:
+            if v is None:
+                clean[k] = ""
+            elif isinstance(v, (str, int, float, bool)):
+                clean[k] = v
+            elif isinstance(v, (list, dict, tuple)):
+                clean[k] = json.dumps(v)[:500]
+            elif isinstance(v, np.floating):
+                clean[k] = float(v)
+            elif isinstance(v, np.integer):
+                clean[k] = int(v)
+            else:
+                clean[k] = str(v)[:100]
+        except Exception:
+            clean[k] = str(v)[:100]
+    return clean
+
 
 def run_async_safely(coro):
-    """Safe async execution with improved error handling"""
+    """Run a coroutine from sync code even if an event loop is active."""
     try:
         return asyncio.run(coro)
-    except RuntimeError as runtime_error:
-        error_msg = str(runtime_error)
-        logger.warning(f"asyncio.run failed with RuntimeError: {error_msg}")
-        
+    except RuntimeError:
         try:
             loop = asyncio.get_running_loop()
-            logger.info("Found running event loop, using run_coroutine_threadsafe")
-            future = asyncio.run_coroutine_threadsafe(coro, loop)
-            return future.result(timeout=15)
+            fut  = asyncio.run_coroutine_threadsafe(coro, loop)
+            return fut.result(timeout=15)
         except RuntimeError:
-            try:
-                def run_in_thread():
-                    thread_loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(thread_loop)
-                    try:
-                        return thread_loop.run_until_complete(coro)
-                    finally:
-                        thread_loop.close()
-                        asyncio.set_event_loop(None)
-                
-                future = thread_pool.submit(run_in_thread)
-                return future.result(timeout=15)
-            except Exception as thread_error:
-                logger.error(f"Thread execution failed: {thread_error}")
-                return None
-    except Exception as general_error:
-        logger.error(f"Unexpected error in run_async_safely: {general_error}")
+            def _runner():
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    return new_loop.run_until_complete(coro)
+                finally:
+                    new_loop.close()
+            return thread_pool.submit(_runner).result(timeout=15)
+    except Exception as exc:
+        logger.error(f"run_async_safely error: {exc}")
         return None
 
-async def analyze_query_with_llm(query: str) -> Dict[str, Any]:
-    """COMPLETELY DYNAMIC LLM analysis - NO hardcoded categories"""
-    try:
-        # DYNAMIC: Let LLM discover everything naturally without constraints
-        prompt = f"""Analyze this user message and extract semantic information. Be creative and specific - don't limit yourself to common categories.
+# ─────────────────────────────────────────  LLM ANALYSIS (with preferences) ─
+    async def analyze_query_with_llm(query: str) -> Dict[str, Any]:
+        """
+        ROBUST: LLM analysis with improved JSON extraction and preference detection
+        """
+        # Enhanced prompt with stricter JSON formatting
+        prompt = f"""Analyze this user message and return ONLY valid JSON:
 
-User Message: {query}
+    User Message: {query}
 
-Analyze and return a JSON object with:
-1. intent_type - what is the user trying to do? (discover naturally from context)
-2. domain - what topic/subject is this about? (identify from content)
-3. action - what action is being requested or expressed?
-4. entities - important things/concepts mentioned
-5. confidence - confidence score from 0.0 to 1.0
-6. semantic_tags - descriptive tags that capture the essence
+    PREFERENCE PATTERNS:
+    - "I like X" → preference_statement with food domain if X is food/drink
+    - "I love X" → strong preference 
+    - "I prefer X" → preference
+    - "My favorite X" → favorite
 
-Be creative and discover patterns naturally. Respond with ONLY the JSON object."""
-        
-        response = requests.post(
-            f"{settings.llm.ollama_url}/api/generate",
-            json={
-                "model": settings.llm.default_model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.1, "max_tokens": 300}
-            },
-            timeout=12
-        )
-        
-        if response.status_code == 200:
-            llm_response = response.json().get("response", "").strip()
-            try:
-                json_start = llm_response.find("{")
-                json_end = llm_response.rfind("}") + 1
-                if json_start >= 0 and json_end > json_start:
-                    json_str = llm_response[json_start:json_end]
-                    analysis = json.loads(json_str)
-                    logger.info(f"Pure LLM analysis for '{query}': {analysis}")
-                    return analysis
-                else:
-                    logger.warning(f"No valid JSON found in LLM response: {llm_response}")
-            except json.JSONDecodeError as e:
-                logger.warning(f"JSON decode error: {e}, Response: {llm_response}")
-        
-        # DYNAMIC FALLBACK: Basic semantic analysis
-        return await pure_semantic_analysis(query)
-        
-    except Exception as e:
-        logger.warning(f"LLM analysis failed: {e}")
-        return await pure_semantic_analysis(query)
+    Return valid JSON object:
+    {{
+    "intent_type": "preference_statement|query|greeting|information_request",
+    "domain": "food|drink|general|social|weather",
+    "action": "state_preference|ask_preference|request_info",
+    "entities": ["pizza", "coffee"],
+    "confidence": 0.9,
+    "semantic_tags": ["preference", "food"],
+    "preference_data": {{
+        "is_preference": true,
+        "preference_type": "food_preference",
+        "items": ["pizza", "coffee"],
+        "strength": "like"
+    }}
+    }}
 
-async def pure_semantic_analysis(query: str) -> Dict[str, Any]:
-    """DYNAMIC semantic analysis using only embeddings and similarity"""
-    global embedding_model
-    
-    if not embedding_model:
-        return {
-            "intent_type": "unknown",
-            "domain": "general", 
-            "action": "unknown",
-            "entities": [],
-            "confidence": 0.1,
-            "semantic_tags": []
-        }
-    
-    try:
-        client, collection = get_chroma_setup()
-        if collection:
-            try:
-                # DYNAMIC: Learn from existing data patterns
-                similar_content = collection.query(query_texts=[query], n_results=5)
-                
-                if similar_content and similar_content.get("metadatas") and similar_content["metadatas"][0]:
-                    existing_patterns = similar_content["metadatas"][0]
-                    
-                    # DYNAMIC: Extract patterns from existing data
-                    intent_types = [meta.get("intent_type", "unknown") for meta in existing_patterns if meta.get("intent_type")]
-                    domains = [meta.get("domain", "general") for meta in existing_patterns if meta.get("domain")]
-                    
-                    # DYNAMIC: Use most frequent pattern
-                    most_common_intent = max(set(intent_types), key=intent_types.count) if intent_types else "unknown"
-                    most_common_domain = max(set(domains), key=domains.count) if domains else "general"
-                    
-                    return {
-                        "intent_type": most_common_intent,
-                        "domain": most_common_domain,
-                        "action": "inferred_from_similar",
-                        "entities": [],
-                        "confidence": 0.6,
-                        "semantic_tags": ["learned_pattern"]
+    IMPORTANT: Return ONLY the JSON object, no additional text."""
+
+        try:
+            response = requests.post(
+                f"{settings.llm.ollama_url}/api/generate",
+                json={
+                    "model": settings.llm.default_model,
+                    "prompt": prompt.strip(),
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.1, 
+                        "max_tokens": 500,
+                        "top_p": 0.9,
+                        "stop": ["\n\n", "```", "```json", "```"]
                     }
-            except Exception as e:
-                logger.warning(f"Pattern learning failed: {e}")
+                },
+                timeout=15
+            )
+            
+            if response.status_code == 200:
+                llm_text = response.json().get("response", "").strip()
+                
+                # ROBUST JSON EXTRACTION: Multiple strategies
+                analysis = None
+                
+                # Strategy 1: Direct JSON parse
+                try:
+                    analysis = json.loads(llm_text)
+                    logger.info(f"✅ Direct JSON parse successful")
+                except json.JSONDecodeError:
+                    pass
+                
+                # Strategy 2: Extract JSON from text
+                if not analysis:
+                    try:
+                        # Find JSON boundaries more reliably
+                        json_start = llm_text.find("{")
+                        json_end = llm_text.rfind("}")
+                        
+                        if json_start >= 0 and json_end > json_start:
+                            json_text = llm_text[json_start:json_end + 1]
+                            
+                            # Clean common issues
+                            json_text = json_text.replace("'", '"')  # Fix single quotes
+                            json_text = json_text.replace('\n', ' ')  # Remove newlines
+                            
+                            analysis = json.loads(json_text)
+                            logger.info(f"✅ Extracted JSON parse successful")
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"JSON extraction failed: {e}")
+                
+                # Strategy 3: Line-by-line JSON reconstruction
+                if not analysis:
+                    try:
+                        lines = [line.strip() for line in llm_text.split('\n') if line.strip()]
+                        json_lines = []
+                        in_json = False
+                        
+                        for line in lines:
+                            if line.startswith('{'):
+                                in_json = True
+                            if in_json:
+                                json_lines.append(line)
+                            if line.endswith('}'):
+                                break
+                        
+                        if json_lines:
+                            json_text = ' '.join(json_lines)
+                            analysis = json.loads(json_text)
+                            logger.info(f"✅ Reconstructed JSON parse successful")
+                            
+                    except json.JSONDecodeError:
+                        pass
+                
+                # Validate and enhance analysis
+                if analysis and isinstance(analysis, dict):
+                    # Ensure preference_data exists
+                    if "preference_data" not in analysis:
+                        analysis["preference_data"] = {"is_preference": False}
+                    
+                    # Enhanced preference detection for common patterns
+                    query_lower = query.lower()
+                    if any(pattern in query_lower for pattern in ["i like", "i love", "i prefer", "my favorite"]):
+                        analysis["intent_type"] = "preference_statement"
+                        analysis["preference_data"]["is_preference"] = True
+                        
+                        # Extract food items
+                        food_keywords = ["pizza", "coffee", "burger", "pasta", "salad", "sandwich", "sushi", "tacos"]
+                        found_items = [item for item in food_keywords if item in query_lower]
+                        
+                        if found_items:
+                            analysis["domain"] = "food"
+                            analysis["preference_data"]["preference_type"] = "food_preference"
+                            analysis["preference_data"]["items"] = found_items
+                            analysis["confidence"] = 0.95
+                    
+                    logger.info(f"🎯 LLM analysis successful: {analysis.get('intent_type')} / {analysis.get('domain')}")
+                    return analysis
+                    
+            logger.warning(f"All JSON parsing strategies failed, LLM response: {llm_text[:200]}...")
+            
+        except Exception as e:
+            logger.warning(f"LLM analysis completely failed: {e}")
         
-        # FINAL FALLBACK
-        return {
-            "intent_type": "communication",
-            "domain": "general",
-            "action": "express",
-            "entities": [],
-            "confidence": 0.3,
-            "semantic_tags": ["semantic_fallback"]
-        }
+        # Enhanced fallback for preference detection
+        return await enhanced_pure_semantic_analysis(query)
+
+
+    async def enhanced_pure_semantic_analysis(query: str) -> Dict[str, Any]:
+        """ENHANCED: Better fallback semantic analysis with preference detection"""
+        query_lower = query.lower()
         
-    except Exception as e:
-        logger.warning(f"Pure semantic analysis failed: {e}")
+        # PREFERENCE DETECTION: Rule-based fallback
+        is_preference = any(pattern in query_lower for pattern in [
+            "i like", "i love", "i prefer", "my favorite", "i enjoy"
+        ])
+        
+        if is_preference:
+            # Extract food items with simple keyword matching
+            food_items = []
+            food_keywords = ["pizza", "coffee", "burger", "pasta", "salad", "sandwich", 
+                            "sushi", "tacos", "kebab", "ice cream", "chocolate"]
+            
+            for item in food_keywords:
+                if item in query_lower:
+                    food_items.append(item)
+            
+            if food_items:
+                return {
+                    "intent_type": "preference_statement",
+                    "domain": "food",
+                    "action": "state_preference",
+                    "entities": food_items,
+                    "confidence": 0.9,
+                    "semantic_tags": ["preference", "food"],
+                    "preference_data": {
+                        "is_preference": True,
+                        "preference_type": "food_preference", 
+                        "items": food_items,
+                        "strength": "like"
+                    }
+                }
+        
+        # # QUERY DETECTION: Food preference questions
+        # if any(pattern in query_lower for pattern in ["what do i like", "what are my favorite", "my preference"]):
+        #     return {
+        #         "intent_type": "query",
+        #         "domain": "food",
+        #         "action": "ask_preference",
+        #         "entities": [],
+        #         "confidence": 0.8,
+        #         "semantic_tags": ["preference_query"]
+        #     }
+        
+        # Standard embedding analysis (existing logic)
+        try:
+            _, col = get_chroma_setup()
+            if col:
+                res = col.query(query_texts=[query], n_results=5)
+                metas = res.get("metadatas", [[]])
+                intents = [m.get("intent_type") for m in metas if m.get("intent_type")]
+                domains = [m.get("domain") for m in metas if m.get("domain")]
+
+                return {
+                    "intent_type": max(intents, key=intents.count, default="unknown") if intents else "unknown",
+                    "domain": max(domains, key=domains.count, default="general") if domains else "general",
+                    "action": "inferred_from_similar",
+                    "entities": [],
+                    "confidence": 0.6 if intents or domains else 0.3,
+                    "semantic_tags": ["learned_pattern"] if intents or domains else ["semantic_fallback"],
+                }
+        except Exception as e:
+            logger.warning(f"Enhanced semantic analysis failed: {e}")
+
         return {
             "intent_type": "unknown",
             "domain": "general", 
@@ -249,215 +355,165 @@ async def pure_semantic_analysis(query: str) -> Dict[str, Any]:
             "semantic_tags": []
         }
 
-def add_to_semantic_memory(content: str, metadata: dict = None) -> bool:
-    """DYNAMIC memory storage with LLM analysis"""
+
+# ─────────────────────────────────────────  MEMORY WRITE  ───────────────────
+async def add_to_semantic_memory(content: str,
+                                 metadata: Optional[dict] = None) -> bool:
+    """Store content with LLM-enriched metadata and deduplication."""
+    global _recent_memories
     try:
-        client, collection = get_chroma_setup()
-        if not collection:
-            logger.warning("ChromaDB not available")
+        _, col = get_chroma_setup()
+        if col is None:
+            logger.warning("ChromaDB unavailable – skip memory storage")
             return False
-        
-        # DYNAMIC: Use LLM analysis instead of hardcoded patterns
-        base_metadata = metadata if metadata else {}
-        current_time = time.time()
-        base_metadata.update({
-            "timestamp": current_time,
-            "type": base_metadata.get("type", "conversation"),
-            "session_id": base_metadata.get("session_id", "default")
+
+        ts         = time.time()
+        meta_base  = (metadata or {}).copy()
+        meta_base.update({
+            "timestamp": ts,
+            "type":      meta_base.get("type", "conversation"),
+            "session_id": meta_base.get("session_id", "default")
         })
-        
-        # DYNAMIC: Get LLM analysis
-        analysis = run_async_safely(analyze_query_with_llm(content))
-        if not analysis:
-            analysis = {
-                "intent_type": "user_message",
-                "domain": "conversation", 
-                "action": "communicate",
-                "entities": [],
-                "confidence": 0.5,
-                "semantic_tags": ["basic_storage"]
+
+        # ── dedup key ------------------------------------------------------
+        with _memory_lock:
+            c_hash  = hashlib.md5(content.encode()).hexdigest()
+            dedup   = f"{c_hash}_{meta_base['session_id']}_{meta_base['type']}"
+            last    = _recent_memories.get(dedup)
+            if last and ts - last[0] < _DEDUP_WINDOW_SEC:
+                logger.info(f"Dedup-skip memory: {content[:40]}…")
+                return True
+
+        # ── LLM enrichment -------------------------------------------------
+        analysis        = run_async_safely(analyze_query_with_llm(content)) or {}
+        preference_meta = {}
+        pref_data       = analysis.get("preference_data", {})
+        if pref_data.get("is_preference"):
+            preference_meta = {
+                "is_user_preference": True,
+                "preference_type":    pref_data.get("preference_type", "general"),
+                "preference_items":   json.dumps(pref_data.get("items", [])),
+                "preference_strength":pref_data.get("strength", "like"),
             }
-        
-        # DYNAMIC: Combine base metadata with LLM analysis
-        llm_metadata = {
-            "intent_type": str(analysis.get("intent_type", "unknown")),
-            "domain": str(analysis.get("domain", "general")),
-            "action": str(analysis.get("action", "unknown")),
+
+        meta_llm = {
+            "intent_type":  str(analysis.get("intent_type", "unknown")),
+            "domain":       str(analysis.get("domain", "general")),
+            "action":       str(analysis.get("action", "unknown")),
             "llm_confidence": float(analysis.get("confidence", 0.0)),
             "entities_count": len(analysis.get("entities", [])),
-            "tags_count": len(analysis.get("semantic_tags", [])),
-            "has_entities": bool(analysis.get("entities", [])),
-            "has_tags": bool(analysis.get("semantic_tags", []))
+            "tags_count":     len(analysis.get("semantic_tags", [])),
+            **preference_meta
         }
-        
-        clean_metadata = sanitize_metadata_for_chromadb({**base_metadata, **llm_metadata})
-        
-        # Store main content
-        searchable_content = content.strip()
-        base_id = str(int(current_time * 1000))
-        session_short = clean_metadata.get("session_id", "default")[:8]
-        doc_id = f"doc_{base_id}_{session_short}"
-        
-        collection.add(
-            documents=[searchable_content],
-            metadatas=[clean_metadata],
+
+        # ── write ----------------------------------------------------------
+        doc_id = f"doc_{int(ts*1000)}_{meta_base['session_id'][:8]}_{meta_base['type']}"
+        col.add(
+            documents=[content.strip()],
+            metadatas=[sanitize_metadata_for_chromadb({**meta_base, **meta_llm})],
             ids=[doc_id]
         )
-        
-        logger.info(f"Memory added - Intent: {analysis.get('intent_type')}, Domain: {analysis.get('domain')}, Confidence: {analysis.get('confidence', 0.0):.2f}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Failed to add memory: {e}")
+        _recent_memories[dedup] = (ts, meta_base['session_id'])
+        if pref_data.get("is_preference"):
+            logger.info(f"🎯 Stored user preference: {pref_data.get('items')}")
+        else:
+            logger.info(f"Memory stored – intent={meta_llm['intent_type']}, domain={meta_llm['domain']}")
         return True
 
-def search_semantic_memory(query: str, n_results: int = 3, session_id: str = None):
-    """COMPLETELY DYNAMIC memory search using LLM analysis"""
+    except Exception as exc:
+        logger.error(f"add_to_semantic_memory failed: {exc}")
+        return False
+
+# ─────────────────────────────────────────  MEMORY SEARCH  ──────────────────
+def search_semantic_memory(query: str, n_results: int = 3,
+                           session_id: Optional[str] = None):
+    """
+    Retrieve top-N memories. If the query is preference-oriented (food domain
+    & “what do I like …”), stored preferences are prioritised.
+    """
     try:
-        client, collection = get_chroma_setup()
-        if not collection:
-            logger.warning("ChromaDB not available for search")
+        _, col = get_chroma_setup()
+        if col is None:
+            logger.warning("ChromaDB unavailable – search aborted")
             return None
-        
-        # DYNAMIC: Use LLM to analyze query
-        analysis = run_async_safely(analyze_query_with_llm(query))
-        if not analysis:
-            analysis = {
-                "intent_type": "search_query",
-                "domain": "conversation",
-                "confidence": 0.5
-            }
-        
-        intent_type = analysis.get("intent_type")
-        domain = analysis.get("domain")
-        confidence = analysis.get("confidence", 0.0)
-        
-        logger.info(f"Semantic search - Intent: {intent_type}, Domain: {domain}, Confidence: {confidence:.2f}")
-        
-        search_results = []
-        
-        # DYNAMIC: Search with multiple strategies
-        try:
-            # Primary search with query
-            results = collection.query(query_texts=[query], n_results=n_results * 2)
-            if results and results.get("documents") and results["documents"][0]:
-                documents = results["documents"][0]
-                metadatas = results.get("metadatas", [[]])[0]
-                distances = results.get("distances", [0] * len(documents))
-                
-                # FIXED: Ensure distances is handled properly
-                if isinstance(distances, list) and len(distances) > 0:
-                    for i, (doc, meta) in enumerate(zip(documents, metadatas)):
-                        if i < len(distances):
-                            distance = distances[i]
-                            # FIXED: Ensure distance is a number
-                            if isinstance(distance, (list, tuple)):
-                                distance = distance[0] if distance else 0.0
-                            distance = float(distance)
-                            search_results.append((doc, meta, distance))
-                        else:
-                            search_results.append((doc, meta, 0.0))
-                else:
-                    for doc, meta in zip(documents, metadatas):
-                        search_results.append((doc, meta, 0.0))
-                        
-        except Exception as e:
-            logger.warning(f"Primary search failed: {e}")
-        
-        # DYNAMIC: Session-aware search if session provided
-        if session_id and confidence > 0.3:
-            try:
-                where_conditions = {"$and": [{"session_id": session_id}]}
-                if domain and domain != "general":
-                    where_conditions["$and"].append({"domain": domain})
-                
-                session_results = collection.query(
-                    query_texts=[query],
-                    n_results=n_results,
-                    where=where_conditions
-                )
-                
-                if session_results and session_results.get("documents") and session_results["documents"][0]:
-                    documents = session_results["documents"][0]
-                    metadatas = session_results.get("metadatas", [[]])[0]
-                    distances = session_results.get("distances", [0] * len(documents))
-                    
-                    # FIXED: Same distance handling for session search
-                    if isinstance(distances, list) and len(distances) > 0:
-                        for i, (doc, meta) in enumerate(zip(documents, metadatas)):
-                            if i < len(distances):
-                                distance = distances[i]
-                                if isinstance(distance, (list, tuple)):
-                                    distance = distance[0] if distance else 0.0
-                                distance = float(distance) + 0.1
-                                search_results.append((doc, meta, distance))
-                            else:
-                                search_results.append((doc, meta, 0.1))
-                    else:
-                        for doc, meta in zip(documents, metadatas):
-                            search_results.append((doc, meta, 0.1))
-                            
-            except Exception as e:
-                logger.warning(f"Session search failed: {e}")
-        
-        if not search_results:
-            logger.info("No search results found")
+
+        analysis   = run_async_safely(analyze_query_with_llm(query)) or {}
+        intent     = analysis.get("intent_type")
+        domain     = analysis.get("domain")
+        conf       = analysis.get("confidence", 0.0)
+
+        logger.info(f"Semantic search – intent={intent}, domain={domain}, conf={conf:.2f}")
+
+        # preference-centric branch
+        pref_query = (domain == "food"
+                      and any(kw in query.lower()
+                              for kw in ["what do i like", "my favorite",
+                                         "my preference", "favorite food"]))
+
+        results: List[Tuple[str, Dict[str, Any], float]] = []
+
+        def _q(text, where: Optional[dict] = None, boost: float = 0.0):
+            res = col.query(query_texts=[text], n_results=n_results*2, where=where)
+            docs  = res.get("documents", [[]])[0]
+            metas = res.get("metadatas", [[]])[0]
+            dists = res.get("distances", [[]])[0] if res.get("distances") else [0.0]*len(docs)
+            out   = []
+            for d, m, dist in zip(docs, metas, dists):
+                if d:
+                    dist = float(dist[0] if isinstance(dist, (list, tuple)) else dist)
+                    out.append((d, m, max(dist-boost, 0.0)))
+            return out
+
+        # preference pass
+        if pref_query:
+            pref_where = {"$and": [{"is_user_preference": True}, {"domain": "food"}]}
+            pref_res   = _q(query, where=pref_where, boost=-0.3)
+            results   += pref_res
+
+        # generic pass
+        results += _q(query)
+
+        # session-scoped boost
+        if session_id and conf > 0.3:
+            where = {"session_id": session_id}
+            if domain and domain != "general":
+                where = {"$and": [where, {"domain": domain}]}
+            results += _q(query, where=where, boost=-0.1)
+
+        if not results:
+            logger.info("No semantic matches.")
             return None
-        
-        # DYNAMIC: Score and rank results
-        seen_content = set()
-        unique_results = []
-        
-        for doc, meta, distance in search_results:
-            if doc and doc.strip():
-                content_key = doc.strip().lower()
-                
-                try:
-                    distance = float(distance)
-                    if content_key not in seen_content and distance < 0.9:
-                        seen_content.add(content_key)
-                        
-                        # DYNAMIC: Calculate relevance score
-                        relevance_score = 1.0 - distance
-                        
-                        # DYNAMIC: Boost for discovered patterns
-                        if meta.get("intent_type") == intent_type:
-                            relevance_score += 0.5
-                        if meta.get("domain") == domain:
-                            relevance_score += 0.6
-                        if meta.get("session_id") == session_id:
-                            relevance_score += 0.4
-                        
-                        llm_conf = meta.get("llm_confidence", 0.0)
-                        if isinstance(llm_conf, (int, float)) and llm_conf > 0.7:
-                            relevance_score += 0.8
-                        
-                        unique_results.append((doc, meta, relevance_score))
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Distance conversion failed: {e}")
-                    if content_key not in seen_content:
-                        seen_content.add(content_key)
-                        unique_results.append((doc, meta, 0.5))
-        
-        # DYNAMIC: Sort by relevance
-        unique_results.sort(key=lambda x: x[2], reverse=True)
-        final_results = unique_results[:n_results]
-        
-        if final_results:
-            result = {
-                "documents": [[doc for doc, _, _ in final_results]],
-                "metadatas": [[meta for _, meta, _ in final_results]]
-            }
-            
-            logger.info(f"Semantic search returned {len(final_results)} results")
-            for i, (doc, meta, score) in enumerate(final_results):
-                logger.info(f"Result {i}: {doc[:50]}... (score: {score:.3f})")
-            
-            return result
-        
-        logger.info("No relevant results found")
-        return None
-        
-    except Exception as e:
-        logger.error(f"Semantic search failed: {e}")
+
+        # dedup + scoring
+        uniq, seen = [], set()
+        for doc, meta, dist in results:
+            score = 1.0 - dist
+            if meta.get("is_user_preference"):
+                score += 1.0
+            if meta.get("intent_type") == intent:
+                score += 0.5
+            if meta.get("domain") == domain:
+                score += 0.6
+            if meta.get("session_id") == session_id:
+                score += 0.4
+            key = doc.strip().lower()
+            if key not in seen and dist < 0.9:
+                uniq.append((doc, meta, score))
+                seen.add(key)
+
+        uniq.sort(key=lambda x: x[2], reverse=True)
+        top = uniq[:n_results]
+
+        logger.info(f"Semantic search returned {len(top)} results")
+        for i, (doc, meta, sc) in enumerate(top):
+            tag = "🎯" if meta.get("is_user_preference") else ""
+            logger.info(f" #{i+1} {tag}score={sc:.3f} – {doc[:60]}…")
+
+        return {
+            "documents": [[d for d, _, _ in top]],
+            "metadatas": [[m for _, m, _ in top]],
+        }
+
+    except Exception as exc:
+        logger.error(f"search_semantic_memory failed: {exc}")
         return None

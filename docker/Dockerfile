@@ -1,5 +1,5 @@
 # Multi-stage build for better optimization
-FROM python:3.10-slim as builder
+FROM python:3.11-slim as builder
 
 # Install system dependencies for building Python packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -24,7 +24,7 @@ RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Final stage
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 # Install curl for health checks
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -59,4 +59,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 EXPOSE 8005 8001
 
 # Use the serve command for multi-agent orchestration
-CMD ["python", "-m", "src.agents.core.main_agent", "serve"]
+CMD ["python", "-m", "src.agents.core.main_agent", "chat"]

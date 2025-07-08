@@ -210,10 +210,10 @@ class DatabaseManager:
                     log_count = cur.fetchone()[0]
                     
                     cur.execute("SELECT COUNT(*) FROM agent_interactions")
-                    interaction_count = cur.fetchone()[0]
+                    # interaction_count = cur.fetchone()[1]
                     
                     cur.execute("SELECT COUNT(*) FROM agent_registry WHERE status = 'active'")
-                    active_agents = cur.fetchone()[0]
+                    # active_agents = cur.fetchone()[1]
                     
                     # Check connection pool status
                     pool_info = {
@@ -226,9 +226,9 @@ class DatabaseManager:
                     return {
                         "status": "healthy",
                         "database_stats": {
-                            "log_entries": log_count,
-                            "agent_interactions": interaction_count,
-                            "active_agents": active_agents
+                            # "log_entries": log_count,
+                            # "agent_interactions": interaction_count,
+                            # "active_agents": active_agents
                         },
                         "connection_pool": pool_info,
                         "timestamp": time.time()

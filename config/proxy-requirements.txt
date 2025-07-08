@@ -1,6 +1,7 @@
+# MCP Server requirements
+fastmcp>=0.9.0
+httpx>=0.25.0
+uvicorn>=0.24.0
+fastapi>=0.104.0
 requests>=2.31.0
-python-dotenv>=1.0.0
-mcp>=1.0.0
-jsonschema
-# This is the key dependency causing the issue
 rpds-py>=0.18.0
