@@ -29,7 +29,6 @@ class MainAgent:
             return
             
         self.groupchat = groupchat_manager
-        # ✅ Remove Console instantiation - use it directly in methods
         self.initialized = True
         
         logger.info("AutoGen 0.6.2 Main Application initialized")
@@ -52,22 +51,46 @@ class MainAgent:
             raise
 
     async def process_message_stream(self, message: str, session_id: str = None):
-        """Process message using AutoGen 0.6.2 with Console streaming"""
+        """Process message using AutoGen 0.6.2 with proper streaming implementation"""
         session_id = session_id or str(uuid.uuid4())
         
         try:
-            # Get the agent stream and use Console properly
             agent_stream = await self.groupchat.run_stream(task=message, session_id=session_id)
             
-            # ✅ Correct Console usage with stream parameter
-            await Console(agent_stream)
+            print("🤖 Jarvis: ", end="", flush=True)
             
-            log_structured("autogen_062_main_success",
-                         session_id=session_id)
+            full_response = ""
+            async for chunk in agent_stream:
+                if isinstance(chunk, dict):
+                    # Handle structured streaming response
+                    content = chunk.get("content", "")
+                    if content:
+                        print(content, end="", flush=True)
+                        full_response += content
+                elif isinstance(chunk, str):
+                    # Handle simple string chunks
+                    print(chunk, end="", flush=True)
+                    full_response += chunk
+                else:
+                    # Handle unexpected chunk types
+                    chunk_str = str(chunk)
+                    print(chunk_str, end="", flush=True)
+                    full_response += chunk_str
+            
+            # Add newline after streaming is complete
+            print()
+            
+            log_structured("autogen_062_streaming_success",
+                         session_id=session_id,
+                         response_length=len(full_response),
+                         streaming_enabled=True)
                          
         except Exception as e:
             logger.error(f"AutoGen 0.6.2 streaming failed: {e}")
-            print(f"❌ Error: {str(e)}")
+            print(f"❌ Streaming Error: {str(e)}")
+            log_structured("autogen_062_streaming_failed", 
+                         session_id=session_id, 
+                         error=str(e))
 
     async def process_message(self, message: str, session_id: str = None) -> str:
         """Process message using AutoGen 0.6.2 GroupChatManager (non-streaming)"""
@@ -89,6 +112,35 @@ class MainAgent:
     def get_system_status(self) -> Dict[str, Any]:
         """Get comprehensive system status"""
         return self.groupchat.get_system_status()
+
+    async def interactive_stream_mode(self, session_id: str):
+        """Enhanced interactive streaming mode with proper error handling"""
+        print("🌊 **Streaming Mode Activated**")
+        print("Type your messages and see responses stream in real-time")
+        print("Commands: 'back' to return to normal mode, 'quit' to exit")
+        print("-" * 50)
+        
+        while True:
+            try:
+                user_input = input("\n💬 Stream: ").strip()
+                
+                if user_input.lower() in ["back", "normal"]:
+                    print("🔄 Returning to normal mode...")
+                    break
+                elif user_input.lower() in ["quit", "exit"]:
+                    return "quit"
+                elif user_input:
+                    await self.process_message_stream(user_input, session_id)
+                    
+            except KeyboardInterrupt:
+                print("\n🔄 Returning to normal mode...")
+                break
+            except Exception as e:
+                print(f"\n❌ Stream Error: {e}")
+                logger.error(f"Interactive streaming error: {e}")
+        
+        return "continue"
+
 
 
 # Global main agent instance
@@ -119,12 +171,12 @@ def chat():
                     print(f"📊 System: {status['system_type']}")
                     print(f"🔧 AutoGen: {status['autogen_version']}")
                     print(f"👥 Agents: {status['agents']['count']}")
+                    print(f"🧠 Intelligence: {', '.join(status.get('intelligence_features', []))}")
                     continue
                 elif user_input.lower() == "stream":
-                    print("🌊 Switching to streaming mode...")
-                    stream_input = input("💬 Stream message: ").strip()
-                    if stream_input:
-                        await agent.process_message_stream(stream_input, session_id)
+                    result = await agent.interactive_stream_mode(session_id)
+                    if result == "quit":
+                        break
                     continue
                 
                 if user_input:
@@ -139,6 +191,23 @@ def chat():
                 print(f"\n❌ Error: {e}")
     
     asyncio.run(chat_loop())
+
+
+@app.command()
+def stream():
+    """Direct streaming mode for testing"""
+    print("🌊 **Direct Streaming Mode**")
+    print("Enter a message to see streaming response:")
+    
+    async def stream_test():
+        agent = main_agent
+        await agent.initialize_system()
+        
+        message = input("💬 Message: ").strip()
+        if message:
+            await agent.process_message_stream(message)
+    
+    asyncio.run(stream_test())
 
 @app.command()
 def status():
@@ -165,7 +234,13 @@ def status():
         print(f"👥 Agents: {status['agents']['count']}")
         print(f"🔄 GroupChat: {'✅' if status['groupchat_initialized'] else '❌'}")
         
-        print("\n🎉 AutoGen 0.6.2 migration successful!")
+        # Check intelligence features
+        if 'intelligence_features' in status:
+            print("🧠 Intelligence Features:")
+            for feature in status['intelligence_features']:
+                print(f"   • {feature}")
+        
+        print("\n🎉 AutoGen 0.6.2 with Intelligence Edition: OPERATIONAL!")
         
     except Exception as e:
         print(f"❌ Status check failed: {e}")

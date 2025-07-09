@@ -240,5 +240,92 @@ class DatabaseManager:
                 "timestamp": time.time()
             }
 
+    def get_session_history(self, session_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get conversation history for a specific session"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT 
+                            user_message,
+                            agent_response,
+                            model_used,
+                            created_at,
+                            response_time_ms
+                        FROM chat_sessions 
+                        WHERE session_id = %s 
+                        ORDER BY created_at DESC 
+                        LIMIT %s
+                    """, (session_id, limit))
+                    
+                    results = cur.fetchall()
+                    
+                    return [dict(row) for row in results] if results else []
+                    
+        except Exception as e:
+            logger.error(f"Failed to get session history: {e}")
+            return []
+
+
+
+    def get_recent_chat_history(self, limit: int = 5) -> List[Dict[str, Any]]:
+        """Get recent chat history across all sessions as fallback"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT 
+                            user_message,
+                            agent_response,
+                            model_used,
+                            created_at
+                        FROM chat_sessions 
+                        ORDER BY created_at DESC 
+                        LIMIT %s
+                    """, (limit,))
+                    
+                    results = cur.fetchall()
+                    
+                    return [
+                        {
+                            "user_message": row['user_message'],
+                            "agent_response": row['agent_response'],
+                            "model_used": row['model_used'],
+                            "timestamp": row['created_at'].timestamp()
+                        }
+                        for row in results
+                    ] if results else []
+                    
+        except Exception as e:
+            logger.error(f"Failed to get recent chat history: {e}")
+            return []
+
+
+
+    def store_chat_session(self, session_id: str, user_message: str, agent_response: str, model_used: str = "ollama", response_time_ms: int = 0) -> Optional[str]:
+        """Store chat session in the chat_sessions table"""
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO chat_sessions (session_id, user_message, agent_response, model_used, response_time_ms, created_at) 
+                        VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP) 
+                        RETURNING id
+                    """, (session_id, user_message, agent_response, model_used, response_time_ms))
+                    
+                    chat_id = cur.fetchone()['id']
+                    conn.commit()
+                    
+
+                    
+                    return str(chat_id)
+
+        except Exception as e:
+            logger.error(f"Chat session storage failed: {e}")
+            return None
+
+
+
+
 # Global singleton instance
 db_manager = DatabaseManager()

@@ -47,7 +47,7 @@ mcp_proxy:
 
     general:
       name: "General System Tools"
-      transport: "http"
+      transport: "sse"
       url: "http://mcp-proxy:9190/servers/general"
       enabled: true
       session_required: true  # ADDED: indicates session management needed

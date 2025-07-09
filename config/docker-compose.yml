@@ -14,7 +14,7 @@ services:
     volumes:
       - ./mcp-servers.json:/app/servers.json:ro
       - ../tools/mcp_servers:/app/tools/mcp_servers:ro
-      - ./mcp_tools:/app/config/mcp_tools:ro
+      - ./mcp_tools.yaml:/app/config/mcp_tools.yaml:ro
     command: >
       --pass-environment
       --port 9190

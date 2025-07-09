@@ -71,11 +71,13 @@ class MCPToolsManager:
             
             if transport == "sse":
                 # Use SSE transport for sparfenyuk/mcp-proxy
-                sse_url = f"{base_url}/servers/{client_name}/sse"
-                server_params = SseServerParams(url=sse_url)
+                server_url = f"{base_url}/servers/{client_name}/sse"
+                sse_url = f"{server_url}/servers/{client_name}/sse"
+                server_params = SseServerParams(url=server_url)
                 
                 # Discover tools via AutoGen's official integration
-                client_tools = await mcp_server_tools(server_params)
+                client_tools = await mcp_server_tools(server_params=server_params)  # ✅ CORRECT
+
                 self.client_tools[client_name] = client_tools
                 
                 log_structured("mcp_client_initialized",

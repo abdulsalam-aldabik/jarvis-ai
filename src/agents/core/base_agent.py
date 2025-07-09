@@ -13,7 +13,7 @@ from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.messages import TextMessage
 from autogen_agentchat.base import TaskResult
 from autogen_ext.models.ollama import OllamaChatCompletionClient
-from autogen_core.memory import ListMemory
+from autogen_core.memory import ListMemory, MemoryContent, MemoryMimeType
 from autogen_ext.memory.chromadb import (
     ChromaDBVectorMemory,
     PersistentChromaDBVectorMemoryConfig,
@@ -76,9 +76,13 @@ class AgentBase(AssistantAgent):
                     ),
                 )
             )
+            log_structured("vector_memory_initialized", agent_id=self.agent_id)
         except Exception as e:
             log_structured("vector_memory_init_failed", agent_id=self.agent_id, error=str(e))
-            self.vector_memory = None
+            self.vectormemory = None
+            
+            # Fallback to basic memory only
+            print(f"⚠️  Warning: Vector memory failed for {self.agent_id}, using basic memory only")
         
         # Register agent
         agentregistry.register_agent(self)
@@ -129,24 +133,33 @@ class AgentBase(AssistantAgent):
                 }
 
             )
+
+
+            if self.current_session_id:
+                chat_id = self.database.store_chat_session(
+                    session_id=self.current_session_id,
+                    user_message=user_input,
+                    agent_response=response,
+                    model_used="ollama"
+                )
+                
+                if chat_id:
+                    log_structured("chat_session_stored_successfully",
+                                agent_id=self.agent_id,
+                                session_id=self.current_session_id,
+                                chat_id=chat_id)
             
             # Vector memory storage (if available)
             if self.vector_memory and self.current_session_id:
-                from autogen_core.memory import MemoryContent, MemoryMimeType
+                
                 
                 interaction_content = f"User: {user_input}\n{self.agent_id}: {response}"
-                await self.vector_memory.add(
-                    MemoryContent(
-                        content=interaction_content,
-                        mime_type=MemoryMimeType.TEXT,
-                        metadata={
-                            "type": "agent_interaction",
-                            "agent_id": self.agent_id,
-                            "session_id": self.current_session_id,
-                            "timestamp": time.time()
-                        }
-                    )
+                # FIX: Use the correct ChromaDB interface
+                memory_content = MemoryContent(
+                    content=interaction_content,
+                    mime_type=MemoryMimeType.TEXT
                 )
+                await self.vector_memory.add(memory_content)
                 
         except Exception as e:
             log_structured("interaction_storage_failed", error=str(e))
