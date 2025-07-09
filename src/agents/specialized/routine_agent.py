@@ -15,6 +15,7 @@ from src.agents.core.base_agent import AgentBase, get_model_client
 from src.agents.core.mcp_tools import mcp_tools_manager
 from src.agents.core.logging_config import log_structured
 from config.settings import settings
+from src.follow_up_generator import follow_up_generator
 
 class RoutineAgent(AgentBase):
     """CORRECT AutoGen 0.6.2 Routine AssistantAgent - SIMPLIFIED"""
@@ -53,7 +54,7 @@ class RoutineAgent(AgentBase):
                      mcp_enabled=True)
 
     async def process_message(self, message: str, context: Dict[str, Any] = None) -> str:
-        """Enhanced routine processing with AutoGen 0.6.2"""
+        """Enhanced routine processing with follow-up generation"""
         try:
             if not self.is_routine_query(message):
                 return await self.get_help_response()
@@ -61,15 +62,15 @@ class RoutineAgent(AgentBase):
             # Analyze routine intent
             intent = self.analyze_routine_intent(message)
             
-            # Process based on intent - simplified for now
+            # Process based on intent
             if intent == "create":
-                result = await self.create_routine_via_mcp(message)
+                result = await self.create_routine_with_follow_ups(message, context)
             elif intent == "list":
-                result = await self.list_routines_via_mcp()
+                result = await self.list_routines_with_follow_ups(context)
             elif intent == "suggest":
-                result = await self.suggest_routine(message)
+                result = await self.suggest_routine_with_follow_ups(message, context)
             elif intent == "track":
-                result = await self.track_routine_execution(message)
+                result = await self.track_routine_with_follow_ups(message, context)
             else:
                 result = await self.get_help_response()
             
@@ -79,6 +80,7 @@ class RoutineAgent(AgentBase):
         except Exception as e:
             log_structured("routine_process_failed", error=str(e))
             return f"I'm having trouble with routine planning right now. Please try again."
+
 
     async def create_routine_via_mcp(self, message: str) -> str:
         """Create routine using MCP tools - simplified"""
@@ -352,3 +354,134 @@ I'll help track your progress and suggest improvements."""
 • "I completed my routine"
 
 I'm here to help you build consistent, healthy habits!"""
+
+
+    async def create_routine_with_follow_ups(self, message: str, context: Dict[str, Any] = None) -> str:
+        """Create routine with contextual follow-up questions"""
+        try:
+            routine_type = self.extract_routine_type(message)
+            base_routine = self.default_routines.get(routine_type, self.default_routines["general"])
+            
+            # Create the routine
+            routine_response = await self.create_routine_via_mcp(message)
+            
+            # Generate follow-up questions
+            follow_up_context = {
+                "routine_type": routine_type,
+                "user_message": message,
+                "created_routine": base_routine,
+                "conversation_history": context.get("conversation_history", []) if context else [],
+                "time_context": context.get("time_context", {}) if context else {},
+                "user_preferences": context.get("user_preferences", {}) if context else {}
+            }
+            
+            follow_ups = await follow_up_generator.generate_follow_ups(
+                intent="routine_create",
+                context=follow_up_context,
+                agent_type="routine"
+            )
+            
+            if follow_ups:
+                routine_response += f"\n\n**To personalize your routine:**\n" + "\n".join([f"• {q}" for q in follow_ups])
+            
+            return routine_response
+            
+        except Exception as e:
+            log_structured("routine_creation_follow_up_failed", error=str(e))
+            return await self.create_routine_via_mcp(message)
+
+    async def list_routines_with_follow_ups(self, context: Dict[str, Any] = None) -> str:
+        """List routines with helpful follow-up suggestions"""
+        try:
+            routine_list = await self.list_routines_via_mcp()
+            
+            # Generate follow-up suggestions
+            follow_up_context = {
+                "action": "list_routines",
+                "conversation_history": context.get("conversation_history", []) if context else [],
+                "time_context": context.get("time_context", {}) if context else {}
+            }
+            
+            follow_ups = await follow_up_generator.generate_follow_ups(
+                intent="routine_manage",
+                context=follow_up_context,
+                agent_type="routine"
+            )
+            
+            if follow_ups:
+                routine_list += f"\n\n**What would you like to do next:**\n" + "\n".join([f"• {q}" for q in follow_ups])
+            
+            return routine_list
+            
+        except Exception as e:
+            log_structured("routine_list_follow_up_failed", error=str(e))
+            return await self.list_routines_via_mcp()
+
+    async def suggest_routine_with_follow_ups(self, message: str, context: Dict[str, Any] = None) -> str:
+        """Suggest routine with personalized follow-up questions"""
+        try:
+            routine_type = self.extract_routine_type(message)
+            base_suggestion = self.get_base_suggestion(routine_type)
+            
+            # Generate personalized follow-up questions
+            follow_up_context = {
+                "routine_type": routine_type,
+                "user_message": message,
+                "suggestion_given": base_suggestion,
+                "conversation_history": context.get("conversation_history", []) if context else [],
+                "time_context": context.get("time_context", {}) if context else {},
+                "user_preferences": context.get("user_preferences", {}) if context else {}
+            }
+            
+            follow_ups = await follow_up_generator.generate_follow_ups(
+                intent="routine_suggest",
+                context=follow_up_context,
+                agent_type="routine"
+            )
+            
+            final_response = base_suggestion
+            if follow_ups:
+                final_response += f"\n\n**To customize this routine:**\n" + "\n".join([f"• {q}" for q in follow_ups])
+            
+            final_response += "\n\nShall I create this routine for you?"
+            
+            return final_response
+            
+        except Exception as e:
+            log_structured("routine_suggest_follow_up_failed", error=str(e))
+            return await self.suggest_routine(message)
+
+    async def track_routine_with_follow_ups(self, message: str, context: Dict[str, Any] = None) -> str:
+        """Track routine execution with improvement suggestions"""
+        try:
+            completed = any(word in message.lower() for word in ["completed", "done", "finished"])
+            
+            if completed:
+                base_response = """🎉 **Great job completing your routine!**
+
+    Consistency builds habits. Keep it up!"""
+                
+                # Generate follow-up questions for improvement
+                follow_up_context = {
+                    "routine_completed": True,
+                    "user_message": message,
+                    "conversation_history": context.get("conversation_history", []) if context else [],
+                    "time_context": context.get("time_context", {}) if context else {}
+                }
+                
+                follow_ups = await follow_up_generator.generate_follow_ups(
+                    intent="routine_track",
+                    context=follow_up_context,
+                    agent_type="routine"
+                )
+                
+                if follow_ups:
+                    base_response += f"\n\n**How can I help you improve:**\n" + "\n".join([f"• {q}" for q in follow_ups])
+                
+                return base_response
+            else:
+                return await self.track_routine_execution(message)
+                
+        except Exception as e:
+            log_structured("routine_track_follow_up_failed", error=str(e))
+            return await self.track_routine_execution(message)

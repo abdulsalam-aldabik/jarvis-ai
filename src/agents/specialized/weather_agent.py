@@ -14,6 +14,7 @@ from autogen_ext.tools.mcp import mcp_server_tools
 from src.agents.core.base_agent import AgentBase, get_model_client
 from src.agents.core.mcp_tools import mcp_tools_manager
 from src.agents.core.logging_config import log_structured
+from src.follow_up_generator import follow_up_generator
 
 class WeatherAgent(AgentBase):
     """CORRECT AutoGen 0.6.2 Weather AssistantAgent with MCP tools integration"""
@@ -43,7 +44,7 @@ class WeatherAgent(AgentBase):
                      mcp_enabled=True)
 
     async def process_message(self, message: str, context: Dict[str, Any] = None) -> str:
-        """Enhanced weather processing with AutoGen 0.6.2 and MCP tools"""
+        """Enhanced weather processing with follow-up generation"""
         try:
             if not self.is_weather_query(message):
                 return await self.get_help_response()
@@ -51,26 +52,24 @@ class WeatherAgent(AgentBase):
             location = self.extract_location(message)
             is_forecast = "forecast" in message.lower()
             
-            # Check cache first
-            cache_key = f"{location}_{'f' if is_forecast else 'c'}"
-            if cache_key in self.weather_cache:
-                timestamp, cached_result = self.weather_cache[cache_key]
-                if time.time() - timestamp < self.cache_ttl:
-                    log_structured("weather_cache_hit", location=location)
-                    await self.store_weather_interaction(message, cached_result, location)
-                    return cached_result
-            
-            # Use MCP tools for weather data
+            # Get weather data
             if is_forecast:
                 result = await self.get_forecast_via_mcp(location)
             else:
                 result = await self.get_current_via_mcp(location)
             
-            # Cache result
-            self.weather_cache[cache_key] = (time.time(), result)
-            await self.store_weather_interaction(message, result, location)
+            # Generate contextual follow-up questions
+            follow_up_questions = await self.generate_weather_follow_ups(
+                message, result, location, context
+            )
             
-            return result
+            # Combine weather info with follow-ups
+            final_response = result
+            if follow_up_questions:
+                final_response += f"\n\n{follow_up_questions}"
+            
+            await self.store_weather_interaction(message, final_response, location)
+            return final_response
             
         except Exception as e:
             log_structured("weather_fetch_failed", location=location, error=str(e))
@@ -129,7 +128,7 @@ class WeatherAgent(AgentBase):
             return self.demo_forecast(location)
 
     def format_weather_response(self, data: Dict[str, Any], location: str) -> str:
-        """Format weather response from MCP tool data"""
+        """Format weather response with activity suggestions"""
         try:
             temp = data.get("temperature", 20)
             feels_like = data.get("feels_like", temp)
@@ -137,14 +136,49 @@ class WeatherAgent(AgentBase):
             humidity = data.get("humidity", 50)
             wind_speed = data.get("wind_speed", 10)
             
-            return f"""Current weather for {location}:
-{temp:.1f}°C (feels like {feels_like:.1f}°C)
-{condition}
-Humidity: {humidity}%
-Wind: {wind_speed:.1f} km/h"""
+            # Basic weather info
+            response = f"""**Current weather for {location}:**
+    🌡️ {temp:.1f}°C (feels like {feels_like:.1f}°C)
+    🌤️ {condition}
+    💧 Humidity: {humidity}%
+    💨 Wind: {wind_speed:.1f} km/h"""
+            
+            # Add contextual recommendations
+            recommendations = self.get_weather_recommendations(temp, condition, wind_speed)
+            if recommendations:
+                response += f"\n\n**Recommendations:**\n{recommendations}"
+            
+            return response
             
         except Exception:
             return self.demo_weather(location)
+
+    def get_weather_recommendations(self, temp: float, condition: str, wind_speed: float) -> str:
+        """Generate weather-based recommendations"""
+        recommendations = []
+        
+        # Temperature-based recommendations
+        if temp < 5:
+            recommendations.append("🧥 Dress warmly - heavy coat recommended")
+        elif temp < 15:
+            recommendations.append("🧤 Light jacket or sweater recommended")
+        elif temp > 25:
+            recommendations.append("🌞 Perfect weather for outdoor activities")
+        
+        # Condition-based recommendations
+        if "rain" in condition.lower():
+            recommendations.append("☔ Don't forget your umbrella")
+        elif "snow" in condition.lower():
+            recommendations.append("❄️ Watch for slippery conditions")
+        elif "clear" in condition.lower() or "sunny" in condition.lower():
+            recommendations.append("🕶️ Great day for a walk or outdoor lunch")
+        
+        # Wind-based recommendations
+        if wind_speed > 20:
+            recommendations.append("🌬️ Quite windy - secure loose items")
+        
+        return "\n".join([f"• {rec}" for rec in recommendations])
+
 
     def format_forecast_response(self, data: Dict[str, Any], location: str) -> str:
         """Format forecast response from MCP tool data"""
@@ -216,3 +250,34 @@ Range: 15°C - 21°C
             )
         except Exception as e:
             log_structured("weather_memory_store_fail", error=str(e))
+
+
+
+    async def generate_weather_follow_ups(self, user_message: str, weather_response: str, location: str, context: Dict[str, Any] = None) -> str:
+        """Generate contextual follow-up questions for weather queries"""
+        try:
+            # Analyze what information might be missing or helpful
+            follow_up_context = {
+                "user_message": user_message,
+                "weather_response": weather_response,
+                "location": location,
+                "conversation_history": context.get("conversation_history", []) if context else [],
+                "time_context": context.get("time_context", {}) if context else {},
+                "intent": "weather_query"
+            }
+            
+            # Generate follow-up questions
+            follow_ups = await follow_up_generator.generate_follow_ups(
+                intent="weather_query",
+                context=follow_up_context,
+                agent_type="weather"
+            )
+            
+            if follow_ups:
+                return f"**Would you also like to know:**\n" + "\n".join([f"• {q}" for q in follow_ups])
+            
+            return ""
+            
+        except Exception as e:
+            log_structured("weather_follow_up_generation_failed", error=str(e))
+            return ""
