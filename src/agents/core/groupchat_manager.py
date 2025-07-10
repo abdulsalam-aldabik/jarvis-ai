@@ -21,6 +21,7 @@ from src.intent_classifier import intent_classifier
 from src.context_enricher import context_enricher
 from config.settings import settings
 from src.shared_context import shared_context_manager, ConversationTurn
+from src.tone_adapter import tone_adapter, ResponseContext
 
 class GroupChatManager:
     """
@@ -64,89 +65,106 @@ class GroupChatManager:
             log_structured("groupchat_initialization_failed", error=str(e))
             raise
     
-    async def process_message(self, message: str, session_id: str = None) -> str:
+    async def process_message(self, message: str, session_id: str | None = None) -> str:
         """
-        Process message using INTELLIGENT AutoGen 0.6.2 patterns
-        Replaces keyword matching with intent classification and context enrichment
+        Process message using INTELLIGENT AutoGen 0.6.2 patterns:
+        intent → enriched context → agent → LLM tone adapter → learning ack
         """
         try:
             if not self.initialized:
                 self.initialize_agents()
-                
+
             session_id = session_id or str(uuid.uuid4())
             shared_context = shared_context_manager.get_or_create_context(session_id)
 
-            # Set session context for all agents
+            # tie every agent to this session
             for agent in self.agents.values():
-                if hasattr(agent, 'set_session_context'):
+                if hasattr(agent, "set_session_context"):
                     agent.set_session_context(session_id)
-            
-            # PHASE 1: Intent Classification
+
+            # PHASE 1: intent
             intent, confidence, target_agent = await intent_classifier.classify_intent(message)
-            
-            # PHASE 2: Context Enrichment
+
+            # PHASE 2: enrich
             enriched_context = await context_enricher.enrich_context(
                 user_message=message,
                 intent=intent,
                 confidence=confidence,
                 target_agent=target_agent,
-                session_id=session_id
+                session_id=session_id,
             )
-            
-            # PHASE 3: Intelligent Agent Selection (with shared context)
+
+            # PHASE 3: pick agent
             selected_agent = self._select_agent_with_context(enriched_context, shared_context)
-            
-            # PHASE 4: Context-Aware Processing
+
+            # PHASE 4: agent executes
             context_dict = self._convert_context_to_dict(enriched_context)
+            if hasattr(enriched_context, "follow_up_questions"):
+                context_dict["follow_up_questions"] = enriched_context.follow_up_questions
 
-            # Add shared context information
             agent_context = shared_context.get_context_for_agent(selected_agent.agent_id)
-            context_dict.update({
-                "shared_context": agent_context,
-                "conversation_theme": shared_context.conversation_theme,
-                "communication_style": shared_context.user_communication_style,
-                "pending_follow_ups": shared_context.pending_follow_ups.copy()
-            })
+            context_dict.update(
+                {
+                    "shared_context": agent_context,
+                    "conversation_theme": shared_context.conversation_theme,
+                    "communication_style": shared_context.user_communication_style,
+                    "pending_follow_ups": shared_context.pending_follow_ups.copy(),
+                }
+            )
 
-            response = await selected_agent.process_message(message, context_dict)
+            draft = await selected_agent.process_message(message, context_dict)
 
-            # Store the conversation turn in shared context
+            # PHASE 4B: LLM tone refinement
+            draft = await tone_adapter.generate_response(
+                ResponseContext(
+                    user_message=message,
+                    agent_type=selected_agent.agent_type,
+                    raw_data={"draft": draft},
+                    user_preferences=shared_context.user_preferences,
+                    communication_style=shared_context.user_communication_style,
+                    # conversation_history=shared_context.last_messages(8),
+                    # time_context=shared_context.time_of_day,
+                    intent=intent,
+                ),
+                shared_context,
+            )
+
+            # PHASE 5: add learning acks
+            enhanced_response = self._add_learning_acknowledgments(draft, shared_context)
+
+            # update memory & logs
+            shared_context.pending_follow_ups.clear()
+            if hasattr(selected_agent, "store_interaction"):
+                await selected_agent.store_interaction(message, enhanced_response)
+
             turn = ConversationTurn(
                 user_message=message,
-                agent_response=response,
+                agent_response=enhanced_response,
                 agent_id=selected_agent.agent_id,
                 intent=intent,
                 confidence=confidence,
                 timestamp=time.time(),
-                context_used=context_dict
+                context_used=context_dict,
             )
             shared_context.add_turn(turn)
-            
-            # PHASE 2 ENHANCEMENT: Add learning acknowledgments to response
-            enhanced_response = self._add_learning_acknowledgments(response, shared_context)
-            
-            # Clear processed follow-ups
-            shared_context.pending_follow_ups.clear()
 
-            # Store interaction in the selected agent
-            if hasattr(selected_agent, 'store_interaction'):
-                await selected_agent.store_interaction(message, enhanced_response)
-            
-            log_structured("autogen_0.6.2_phase2_success",
-                        session_id=session_id,
-                        intent=intent,
-                        confidence=confidence,
-                        agent_used=selected_agent.agent_id,
-                        response_length=len(enhanced_response),
-                        conversation_turns=len(shared_context.conversation_turns),
-                        communication_style=shared_context.user_communication_style)
-            
+            log_structured(
+                "autogen_0.6.2_phase2_success",
+                session_id=session_id,
+                intent=intent,
+                confidence=confidence,
+                agent_used=selected_agent.agent_id,
+                response_length=len(enhanced_response),
+                conversation_turns=len(shared_context.conversation_turns),
+                communication_style=shared_context.user_communication_style,
+            )
             return enhanced_response
-                
+
         except Exception as e:
             log_structured("autogen_0.6.2_intelligent_failed", error=str(e))
-            return f"I encountered an error: {str(e)}"
-    
+            return f"I encountered an error: {e}"
+
+        
     def _select_agent_with_context(self, context: Any, shared_context: Any) -> AgentBase:
         """
         Intelligent agent selection based on enriched context and shared context

@@ -15,6 +15,7 @@ from src.agents.core.base_agent import AgentBase, get_model_client
 from src.agents.core.mcp_tools import mcp_tools_manager
 from src.agents.core.logging_config import log_structured
 from src.follow_up_generator import follow_up_generator
+from src.tone_adapter import tone_adapter, ResponseContext
 
 class WeatherAgent(AgentBase):
     """CORRECT AutoGen 0.6.2 Weather AssistantAgent with MCP tools integration"""
@@ -127,31 +128,21 @@ class WeatherAgent(AgentBase):
             log_structured("forecast_mcp_failed", location=location, error=str(e))
             return self.demo_forecast(location)
 
-    def format_weather_response(self, data: Dict[str, Any], location: str) -> str:
-        """Format weather response with activity suggestions"""
-        try:
-            temp = data.get("temperature", 20)
-            feels_like = data.get("feels_like", temp)
-            condition = data.get("condition", "Clear")
-            humidity = data.get("humidity", 50)
-            wind_speed = data.get("wind_speed", 10)
-            
-            # Basic weather info
-            response = f"""**Current weather for {location}:**
-    🌡️ {temp:.1f}°C (feels like {feels_like:.1f}°C)
-    🌤️ {condition}
-    💧 Humidity: {humidity}%
-    💨 Wind: {wind_speed:.1f} km/h"""
-            
-            # Add contextual recommendations
-            recommendations = self.get_weather_recommendations(temp, condition, wind_speed)
-            if recommendations:
-                response += f"\n\n**Recommendations:**\n{recommendations}"
-            
-            return response
-            
-        except Exception:
-            return self.demo_weather(location)
+    async def format_weather_response(self, data: Dict[str, Any], location: str, context: Dict[str, Any]) -> str:
+        """Generate dynamic weather response using LLM"""
+        response_context = ResponseContext(
+            user_message=context.get('original_message', ''),
+            agent_type="weather",
+            raw_data=data,
+            user_preferences=context.get('user_preferences', {}),
+            communication_style=context.get('communication_style', 'friendly'),
+            conversation_history=context.get('conversation_history', ''),
+            time_context=context.get('time_context', ''),
+            intent=context.get('intent', 'weather_query')
+        )
+        
+        shared_context = context.get('shared_context')
+        return await tone_adapter.generate_response(response_context, shared_context)
 
     def get_weather_recommendations(self, temp: float, condition: str, wind_speed: float) -> str:
         """Generate weather-based recommendations"""

@@ -26,7 +26,8 @@ class LLMConfig:
     ollama_url: str = os.getenv("OLLAMA_URL", "http://192.168.0.116:11434")
     default_model: str = os.getenv("OLLAMA_MODEL", "llama3:latest")
     timeout_seconds: int = int(os.getenv("OLLAMA_TIMEOUT", "30"))
-    
+    LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+
     def validate(self) -> List[str]:
         issues = []
         if not self.ollama_url:

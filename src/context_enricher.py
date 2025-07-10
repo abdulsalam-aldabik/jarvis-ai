@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from src.agents.core.database import db_manager
 from src.agents.core.logging_config import log_structured
 from config.settings import settings
+from src.follow_up_generator import follow_up_generator
 
 @dataclass
 class EnrichedContext:
@@ -59,6 +60,9 @@ class ContextEnricher:
         """
         try:
             timestamp = time.time()
+            # Get shared context
+            from src.shared_context import shared_context_manager
+            shared_context = shared_context_manager.get_or_create_context(session_id)
             
             # Gather all context components in parallel
             user_preferences = await self._get_user_preferences(session_id)
@@ -68,6 +72,13 @@ class ContextEnricher:
             agent_memory = await self._get_agent_memory(target_agent, session_id)
             previous_interactions = await self._get_previous_interactions(target_agent, session_id)
             
+
+
+            # Generate follow-up questions
+            follow_up_questions = await follow_up_generator.analyze_and_generate(
+                user_message, intent, confidence, shared_context
+            )
+
             enriched_context = EnrichedContext(
                 user_message=user_message,
                 intent=intent,
@@ -82,13 +93,17 @@ class ContextEnricher:
                 agent_memory=agent_memory,
                 previous_interactions=previous_interactions
             )
+
+            # Add follow-up questions to enriched context
+            enriched_context.follow_up_questions = follow_up_questions
             
             log_structured("context_enriched",
                          intent=intent,
                          target_agent=target_agent,
                          session_id=session_id,
                          context_size=len(conversation_history),
-                         preferences_count=len(user_preferences))
+                         preferences_count=len(user_preferences),
+                         follow_up_questions=len(follow_up_questions))
             
             return enriched_context
             
